@@ -5,6 +5,10 @@ Third-party prebuilt binaries and vendored source. **Not committed to git** (see
 two of them exceed GitHub's 100MB file limit. This file documents what to drop here
 so a fresh checkout can build.
 
+**Quick start:** run `..\get-externs.ps1` from the repo root to download and stage
+everything below automatically (needs git, 7-Zip, and VS 2022 C++ tools). The rest
+of this file documents what it fetches and where.
+
 Layout the build expects:
 
 ```

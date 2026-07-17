@@ -3,6 +3,7 @@
 #include "appdata.h"
 #include "playlistpanel.h"
 #include "shaderpanel.h"
+#include "shaderparamspanel.h"
 #include "videowidget.h"
 
 #include <QActionGroup>
@@ -14,10 +15,13 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QFormLayout>
+#include <QHash>
 #include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -26,6 +30,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QStyle>
+#include <QStyleOptionSlider>
 #include <QTabWidget>
 #include <QToolButton>
 #include <QUrl>
@@ -56,16 +61,75 @@ const char *kVideoFilter =
 
 const QColor kLed(0x4a, 0xff, 0x6a);
 
-// Recolour a stock icon to LED green. A stylesheet cannot reach inside a QIcon, so tint the
-// pixmap: SourceIn keeps the glyph's alpha and replaces every colour under it.
-QIcon ledIcon(QStyle *style, QStyle::StandardPixmap sp, int size = 22)
+// Left-click jumps the handle to the click point, then hands off to the normal drag machinery.
+// The SH_Slider_AbsoluteSetButtons style hint would do this in one line, but QStyleSheetStyle
+// (active because the transport bar carries a stylesheet) swallows it, so do it by hand.
+class ClickSlider : public QSlider
 {
-    QPixmap pm = style->standardIcon(sp).pixmap(size, size);
+public:
+    using QSlider::QSlider;
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && maximum() > minimum()) {
+            QStyleOptionSlider opt;
+            initStyleOption(&opt);
+            const QRect groove = style()->subControlRect(QStyle::CC_Slider, &opt,
+                                                         QStyle::SC_SliderGroove, this);
+            const QRect handle = style()->subControlRect(QStyle::CC_Slider, &opt,
+                                                         QStyle::SC_SliderHandle, this);
+            const int pos = int(e->position().x()) - groove.x() - handle.width() / 2;
+            const int span = groove.width() - handle.width();
+            setValue(QStyle::sliderValueFromPosition(minimum(), maximum(), pos, span));
+            // The handle now sits under the cursor, so the base class starts a drag from here
+            // and still emits sliderPressed/sliderReleased for the seek logic.
+        }
+        QSlider::mousePressEvent(e);
+    }
+};
+
+// FNV-nothing: just tint a glyph LED green. SourceIn keeps the glyph's alpha and paints every
+// lit pixel green, which is how a monochrome icon becomes an LED without per-icon artwork.
+QIcon tintLed(QPixmap pm)
+{
     QPainter p(&pm);
     p.setCompositionMode(QPainter::CompositionMode_SourceIn);
     p.fillRect(pm.rect(), kLed);
     p.end();
     return QIcon(pm);
+}
+
+// A bundled font, registered once per resource. An empty family (load failure) falls back to
+// the default, which still shows the text -- just not in the intended typeface.
+QFont bundledFont(const QString &resource, int px)
+{
+    static QHash<QString, QString> families;
+    auto it = families.constFind(resource);
+    if (it == families.constEnd()) {
+        const int id = QFontDatabase::addApplicationFont(resource);
+        it = families.insert(resource,
+            id >= 0 ? QFontDatabase::applicationFontFamilies(id).value(0) : QString());
+    }
+    QFont f(*it);
+    f.setPixelSize(px);
+    return f;
+}
+
+QFont segmentFont(int px) { return bundledFont(QStringLiteral(":/font/lcddot_tr.ttf"), px); }
+
+// Recolour a stock icon to LED green. A stylesheet cannot reach inside a QIcon, so tint the
+// pixmap: SourceIn keeps the glyph's alpha and replaces every colour under it.
+QIcon ledIcon(QStyle *style, QStyle::StandardPixmap sp, int size = 22)
+{
+    return tintLed(style->standardIcon(sp).pixmap(size, size));
+}
+
+// Same treatment for a bundled SVG. QIcon renders it through the svg icon plugin; currentColor
+// resolves to black, which SourceIn then replaces with LED green.
+QIcon ledSvg(const QString &path, int size = 22)
+{
+    return tintLed(QIcon(path).pixmap(size, size));
 }
 
 // Recessed well: the gradient runs dark-at-top to lighter-at-bottom and the bevel is dark on
@@ -78,7 +142,9 @@ QToolButton {
     border-radius: 5px;
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #121212, stop:1 #262626);
     padding: 5px;
+    color: #4aff6a;
 }
+QLabel { color: #4aff6a; }
 QToolButton:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a1a1a, stop:1 #303030);
 }
@@ -134,10 +200,17 @@ MainWindow::MainWindow(QWidget *parent)
     tabs->addTab(m_shaders, tr("Shaders"));
     tabs->addTab(m_playlist, tr("Playlist"));
 
-    auto *dock = new QDockWidget(tr("Library"), this);
-    dock->setObjectName(QStringLiteral("shaderDock"));
-    dock->setWidget(tabs);
-    addDockWidget(Qt::RightDockWidgetArea, dock);
+    m_libraryDock = new QDockWidget(tr("Library"), this);
+    m_libraryDock->setObjectName(QStringLiteral("shaderDock"));
+    m_libraryDock->setWidget(tabs);
+    addDockWidget(Qt::RightDockWidgetArea, m_libraryDock);
+
+    m_params = new ShaderParamsPanel(m_video, shaderRoot(), this);
+    m_paramsDock = new QDockWidget(tr("Shader Settings"), this);
+    m_paramsDock->setObjectName(QStringLiteral("paramsDock"));
+    m_paramsDock->setWidget(m_params);
+    addDockWidget(Qt::RightDockWidgetArea, m_paramsDock);
+    splitDockWidget(m_libraryDock, m_paramsDock, Qt::Vertical); // stacked under the library
 
     buildMenus();
     buildTransport();
@@ -149,6 +222,14 @@ MainWindow::MainWindow(QWidget *parent)
         m_shaders->setCurrentPreset(QString());
     });
     connect(m_video, &VideoWidget::doubleClicked, this, &MainWindow::toggleFullscreen);
+    // First video to report a size snaps to the default scale; later files leave the window
+    // where the user put it. Explicit scale-button clicks always apply, startup or not.
+    connect(m_video, &VideoWidget::videoSizeChanged, this, [this](const QSize &s) {
+        if (!m_scaledOnce && !s.isEmpty()) {
+            m_scaledOnce = true;
+            scaleTo(m_scaleFactor);
+        }
+    });
     connect(m_video, &VideoWidget::tracksChanged, this, &MainWindow::rebuildSubtitleMenu);
     connect(m_video, &VideoWidget::titleChanged, this, [this](const QString &t) {
         setWindowTitle(t.isEmpty() ? QStringLiteral("ShaderPlayer-RA")
@@ -176,6 +257,16 @@ void MainWindow::buildMenus()
     play->addAction(tr("Forward 10s"), Qt::Key_Right, this, [this] { m_video->seekRelative(10); });
 
     QMenu *view = menuBar()->addMenu(tr("&View"));
+    // toggleViewAction is already checkable and tracks the dock: closing it via the dock's own
+    // X unticks this, and reticking brings it back. No manual sync needed.
+    QAction *showLibrary = m_libraryDock->toggleViewAction();
+    showLibrary->setText(tr("Show &Library"));
+    view->addAction(showLibrary);
+    QAction *showParams = m_paramsDock->toggleViewAction();
+    showParams->setText(tr("Show Shader &Settings"));
+    view->addAction(showParams);
+    view->addSeparator();
+
     m_fullscreenAction = view->addAction(tr("&Fullscreen"), Qt::Key_F11, this,
                                          &MainWindow::toggleFullscreen);
     m_fullscreenAction->setCheckable(true);
@@ -263,28 +354,53 @@ void MainWindow::buildTransport()
     m_playButton = button(QStyle::SP_MediaPlay, tr("Play/Pause"), &VideoWidget::togglePause);
     button(QStyle::SP_MediaSkipForward, tr("Next"), &VideoWidget::stepForward);
 
-    m_seek = new QSlider(Qt::Horizontal, bar);
+    m_seek = new ClickSlider(Qt::Horizontal, bar);
     m_seek->setRange(0, 0);
     layout->addWidget(m_seek, 1);
 
+    auto glowGreen = [](QWidget *w, int blur) {
+        auto *g = new QGraphicsDropShadowEffect(w);
+        g->setColor(kLed);
+        g->setOffset(0, 0);
+        g->setBlurRadius(blur);
+        w->setGraphicsEffect(g);
+    };
+
     m_timeLabel = new QLabel(QStringLiteral("0:00 / 0:00"), bar);
+    m_timeLabel->setFont(segmentFont(24));
+    glowGreen(m_timeLabel, 10);
     layout->addWidget(m_timeLabel);
 
     auto *volIcon = new QLabel(bar);
     volIcon->setPixmap(ledIcon(style(), QStyle::SP_MediaVolume, 16).pixmap(16, 16));
     // A label has no background of its own, so here the halo hugs the glyph rather than a
     // rounded rect -- the speaker actually bleeds light.
-    auto *volGlow = new QGraphicsDropShadowEffect(volIcon);
-    volGlow->setColor(kLed);
-    volGlow->setOffset(0, 0);
-    volGlow->setBlurRadius(10);
-    volIcon->setGraphicsEffect(volGlow);
+    glowGreen(volIcon, 10);
     layout->addWidget(volIcon);
 
     m_volume = new QSlider(Qt::Horizontal, bar);
     m_volume->setRange(0, 100);
     m_volume->setFixedWidth(90);
     layout->addWidget(m_volume);
+
+    // Scale controls, right of the volume: snap the window so the video shows at 1x/2x/3x its
+    // pixel size, plus a fullscreen toggle. Same LED font and glow as the time readout.
+    for (int factor : { 1, 2, 3 }) {
+        auto *b = new QToolButton(bar);
+        b->setText(QStringLiteral("%1x").arg(factor));
+        b->setFont(segmentFont(24));
+        b->setToolTip(tr("Scale video to %1x").arg(factor));
+        glowGreen(b, 14);
+        connect(b, &QToolButton::clicked, this, [this, factor] { scaleTo(factor); });
+        layout->addWidget(b);
+    }
+
+    auto *fs = new QToolButton(bar);
+    fs->setIcon(ledSvg(QStringLiteral(":/icons/arrows-fullscreen.svg"), 18));
+    fs->setToolTip(tr("Fullscreen"));
+    glowGreen(fs, 14);
+    connect(fs, &QToolButton::clicked, this, &MainWindow::toggleFullscreen);
+    layout->addWidget(fs);
 
     auto *dock = new QDockWidget(this);
     dock->setObjectName(QStringLiteral("transportDock"));
@@ -318,6 +434,26 @@ void MainWindow::buildTransport()
         m_playButton->setIcon(ledIcon(style(), paused ? QStyle::SP_MediaPlay
                                                       : QStyle::SP_MediaPause));
     });
+}
+
+void MainWindow::scaleTo(int factor)
+{
+    m_scaleFactor = factor;
+    // Scale against the shader source, not the raw video: an integer multiple of the source is
+    // what keeps crt-royale's scanlines and mask clean, and it honours the Source Resolution
+    // override so 2x of a pinned 320x240 is a true 640x480.
+    const QSize src = m_video->sourceSize();
+    if (src.isEmpty())
+        return; // nothing loaded yet; the pending factor applies when a video arrives
+
+    if (isFullScreen())
+        setFullscreen(false);
+    if (isMaximized())
+        showNormal();
+
+    // Resize the window by the difference between the video widget's current size and the size
+    // that shows the picture at factor x. The chrome (menu, docks) rides along unchanged.
+    resize(size() - m_video->size() + src * factor);
 }
 
 void MainWindow::toggleFullscreen()
@@ -393,8 +529,13 @@ void MainWindow::applySourceOverride(const QSize &size, bool persist)
         m_customSourceAction->setText(tr("&Custom (%1 x %2)...").arg(size.width()).arg(size.height()));
     }
 
-    if (persist)
+    if (persist) {
         settings()->setValue(QStringLiteral("shaders/sourceOverride"), size);
+        // The window is sized in multiples of the source, so a deliberate source change should
+        // re-snap to keep the current factor exact. Guarded on persist, so the startup restore
+        // (which lets the one-time videoSizeChanged snap handle it) doesn't fight geometry.
+        scaleTo(m_scaleFactor);
+    }
 }
 
 void MainWindow::promptCustomSourceSize()
@@ -455,14 +596,29 @@ void MainWindow::restoreSettings()
 {
     QSettings *s = settings();
     restoreGeometry(s->value(QStringLiteral("window/geometry")).toByteArray());
-    restoreState(s->value(QStringLiteral("window/state")).toByteArray());
+    const bool hadLayout = restoreState(s->value(QStringLiteral("window/state")).toByteArray());
+
+    // First run only: widen the right column 20px past its natural default. Queued so it runs
+    // once the docks have been laid out at their content width; a saved layout is left alone.
+    if (!hadLayout) {
+        QMetaObject::invokeMethod(this, [this] {
+            resizeDocks({ m_libraryDock }, { m_libraryDock->width() + 20 }, Qt::Horizontal);
+        }, Qt::QueuedConnection);
+    }
 
     m_volume->setValue(s->value(QStringLiteral("volume"), 100).toInt());
 
     const QSize override = s->value(QStringLiteral("shaders/sourceOverride")).toSize();
     applySourceOverride(override, false);
 
-    const QString preset = s->value(QStringLiteral("shaders/lastPreset")).toString();
+    QString preset = s->value(QStringLiteral("shaders/lastPreset")).toString();
+    // First run defaults to crt-royale, matching the favourite seeded in ShaderPanel. Guarded
+    // on the key so deliberately choosing "no shader" is remembered as empty, not re-seeded.
+    if (!s->contains(QStringLiteral("shaders/lastPreset"))) {
+        const QString royale = shaderRoot() + QStringLiteral("/crt/crt-royale.slangp");
+        if (QFileInfo::exists(royale))
+            preset = royale;
+    }
     if (!preset.isEmpty() && QFileInfo::exists(preset)) {
         m_video->setPreset(preset);
         m_shaders->setCurrentPreset(preset);

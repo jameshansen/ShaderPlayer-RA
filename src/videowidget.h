@@ -2,6 +2,7 @@
 
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions_3_3_Core>
+#include <QList>
 #include <QSize>
 #include <QString>
 #include <QTimer>
@@ -19,6 +20,19 @@ struct PlaylistEntry {
     QString title;      // media-title if mpv knows one, else the file name
     QString filename;
     bool current = false;
+};
+
+// One tunable exposed by a preset. Everything here is sanitized before it reaches the UI:
+// finite bounds, minimum <= maximum, a usable name. A malicious preset cannot smuggle NaN
+// ranges or a name long enough to be a problem past extractParams().
+struct ShaderParam {
+    QString name;           // the librashader parameter id; also the settings sub-key
+    QString description;    // human label, truncated
+    float minimum = 0.0f;
+    float maximum = 1.0f;
+    float initial = 0.0f;   // the preset's default, i.e. what "Reset to Default" restores
+    float step = 0.0f;      // 0 means "no sensible step", the panel derives one
+    float value = 0.0f;     // current live value
 };
 
 // What actually came out of a render stage. Enough to answer "is it black?" without a human
@@ -50,11 +64,23 @@ public:
     void setPreset(const QString &path);
     QString preset() const { return m_presetPath; }
 
+    // The current preset's tunable parameters, sanitized. Empty when there is no shader.
+    const QList<ShaderParam> &shaderParams() const { return m_params; }
+    // Set one by name. Ignores unknown names and non-finite values, and clamps to the
+    // parameter's own bounds, so nothing the UI (or a tampered settings file) sends can push
+    // the chain outside what the preset declared.
+    void setShaderParam(const QString &name, float value);
+
     // The resolution the shader chain sees. An invalid size means the video's native size.
     // This is the knob that keeps CRT mask geometry stable across sources.
     void setSourceOverride(const QSize &size);
     QSize sourceOverride() const { return m_forcedSource; }
     QSize sourceSize() const;
+
+    // The video's actual display size, ignoring any source override. This is what the scale
+    // buttons size the window against, so 2x means twice the real picture, not twice the
+    // shader's working resolution.
+    QSize videoSize() const;
 
     void open(const QStringList &files, bool append = false);
     QList<SubtitleTrack> subtitleTracks() const;
@@ -65,7 +91,7 @@ public:
     void playIndex(int index);
     void movePlaylistEntry(int from, int to);
     void removePlaylistEntry(int index);
-    void loadList(const QString &m3uPath);
+    void loadList(const QString &m3uPath, bool autoplay = true);
 
     // Read back what mpv produced, and what the shader chain produced from it. Probing both
     // is what separates "mpv decoded nothing" from "the chain ate the frame".
@@ -95,6 +121,8 @@ signals:
     void titleChanged(const QString &title);
     void shaderFailed(const QString &message);
     void doubleClicked();
+    void videoSizeChanged(const QSize &size);
+    void shaderParamsChanged();   // the parameter set was rebuilt (preset changed)
 
 protected:
     void initializeGL() override;
@@ -107,6 +135,7 @@ private slots:
 private:
     void initializeGLOrThrow();
     void rebuildChain();
+    void extractParams(libra_shader_preset_t preset);   // sanitize preset params into m_params
     void releaseChain();
     void resizeTargets(int srcW, int srcH, int outW, int outH);
     void releaseTargets();
@@ -114,6 +143,7 @@ private:
     FrameStats probe(GLuint fbo, int w, int h);
 
     QString m_presetPath;
+    QList<ShaderParam> m_params;
     QSize m_forcedSource;
 
     mpv_handle *m_mpv = nullptr;

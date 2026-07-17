@@ -140,5 +140,5 @@ void PlaylistPanel::save() const
 void PlaylistPanel::restore()
 {
     if (QFileInfo::exists(playlistPath()))
-        m_video->loadList(playlistPath());
+        m_video->loadList(playlistPath(), /*autoplay=*/false);
 }

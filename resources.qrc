@@ -1,5 +1,7 @@
 <RCC>
     <qresource prefix="/">
         <file>icons/star.ico</file>
+        <file>icons/arrows-fullscreen.svg</file>
+        <file>font/lcddot_tr.ttf</file>
     </qresource>
 </RCC>

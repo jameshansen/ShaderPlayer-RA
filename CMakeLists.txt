@@ -18,6 +18,7 @@ add_executable(ShaderPlayer WIN32
     src/mainwindow.cpp
     src/playlistpanel.cpp
     src/shaderpanel.cpp
+    src/shaderparamspanel.cpp
     src/videowidget.cpp
     resources.qrc
 )
@@ -32,6 +33,8 @@ target_compile_definitions(ShaderPlayer PRIVATE
     LIBRA_RUNTIME_OPENGL
     # Dev fallback for the shader library; an installed build uses ./shaders next to the exe.
     SHADERPLAYER_SHADER_DIR="${EXTERN}/slang-shaders"
+    # Dev fallback for the bundled factory defaults; an installed build uses ./defaults.ini.
+    SHADERPLAYER_DEFAULTS="${CMAKE_SOURCE_DIR}/defaults.ini"
 )
 
 target_link_libraries(ShaderPlayer PRIVATE
@@ -47,6 +50,8 @@ target_link_libraries(ShaderPlayer PRIVATE
 # The release zip ships the DLL as librashader.dll, but its import lib was built from the
 # librashader_capi crate and binds to librashader_capi.dll, so it must be staged under that name.
 add_custom_command(TARGET ShaderPlayer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/defaults.ini" "$<TARGET_FILE_DIR:ShaderPlayer>"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${EXTERN}/mpv/libmpv-2.dll" "$<TARGET_FILE_DIR:ShaderPlayer>"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

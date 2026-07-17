@@ -6,6 +6,8 @@
 #include <QMetaObject>
 #include <QOpenGLContext>
 #include <QRect>
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <vector>
 
@@ -100,6 +102,8 @@ VideoWidget::VideoWidget(QWidget *parent)
     mpv_observe_property(m_mpv, 0, "pause", MPV_FORMAT_FLAG);
     mpv_observe_property(m_mpv, 0, "media-title", MPV_FORMAT_STRING);
     mpv_observe_property(m_mpv, 0, "track-list/count", MPV_FORMAT_INT64);
+    mpv_observe_property(m_mpv, 0, "dwidth", MPV_FORMAT_INT64);
+    mpv_observe_property(m_mpv, 0, "dheight", MPV_FORMAT_INT64);
     // MPV_FORMAT_NONE fires on any playlist change, including a reorder that leaves the count alone.
     mpv_observe_property(m_mpv, 0, "playlist", MPV_FORMAT_NONE);
 
@@ -187,15 +191,66 @@ void VideoWidget::releaseChain()
     }
 }
 
+// Pull the preset's tunables out and sanitize them. Everything downstream (the panel, the
+// settings file round-trip) trusts this list, so this is the one place that has to be paranoid
+// about a hand-crafted preset: absurd counts, NaN/Inf bounds, inverted ranges, junk names.
+void VideoWidget::extractParams(libra_shader_preset_t preset)
+{
+    m_params.clear();
+
+    libra_preset_param_list_t list{};
+    libra_error_t err = libra_preset_get_runtime_params(&preset, &list);
+    if (err) {
+        libra_error_free(&err);
+        return;
+    }
+
+    // Hard cap: a preset with a pathological parameter count can't make us build a runaway
+    // number of widgets or churn through unbounded work here.
+    constexpr uint64_t kMaxParams = 512;
+    const uint64_t n = list.parameters ? qMin(list.length, kMaxParams) : 0;
+
+    for (uint64_t i = 0; i < n; ++i) {
+        const libra_preset_param_t &p = list.parameters[i];
+
+        const QString name = p.name ? QString::fromUtf8(p.name) : QString();
+        if (name.isEmpty() || name.size() > 256)
+            continue; // no usable id, or a name long enough to be a nuisance as a settings key
+        if (!std::isfinite(p.minimum) || !std::isfinite(p.maximum)
+            || !std::isfinite(p.initial) || !std::isfinite(p.step))
+            continue; // NaN/Inf bounds can't map to any sane control
+        if (p.minimum > p.maximum)
+            continue; // inverted range: refuse rather than guess the author's intent
+
+        ShaderParam sp;
+        sp.name = name;
+        sp.description = p.description ? QString::fromUtf8(p.description).left(200) : QString();
+        sp.minimum = p.minimum;
+        sp.maximum = p.maximum;
+        sp.step = (std::isfinite(p.step) && p.step > 0.0f) ? p.step : 0.0f;
+        sp.initial = std::clamp(p.initial, p.minimum, p.maximum);
+        sp.value = sp.initial;
+        m_params.append(sp);
+    }
+
+    libra_preset_free_runtime_params(list);
+}
+
 void VideoWidget::rebuildChain()
 {
     releaseChain();
-    if (m_presetPath.isEmpty())
-        return; // passthrough
+    m_params.clear();
+    if (m_presetPath.isEmpty()) {
+        emit shaderParamsChanged(); // passthrough: the panel should empty itself
+        return;
+    }
 
     try {
         libra_shader_preset_t preset = nullptr;
         checkLibra(libra_preset_create(m_presetPath.toUtf8().constData(), &preset), "preset_create");
+
+        // Must happen before filter_chain_create, which invalidates the preset handle.
+        extractParams(preset);
 
         filter_chain_gl_opt_t opt{};
         opt.version = LIBRASHADER_CURRENT_VERSION;
@@ -210,9 +265,29 @@ void VideoWidget::rebuildChain()
     } catch (const std::exception &e) {
         // A bad preset falls back to passthrough rather than taking the app down.
         releaseChain();
+        m_params.clear();
         m_presetPath.clear();
         qCritical("%s", e.what());
         emit shaderFailed(QString::fromUtf8(e.what()));
+    }
+
+    emit shaderParamsChanged();
+}
+
+void VideoWidget::setShaderParam(const QString &name, float value)
+{
+    if (!m_chain || !std::isfinite(value))
+        return;
+    for (ShaderParam &p : m_params) {
+        if (p.name != name)
+            continue;
+        p.value = std::clamp(value, p.minimum, p.maximum);
+        libra_error_t err = libra_gl_filter_chain_set_param(
+            &m_chain, name.toUtf8().constData(), p.value);
+        if (err)
+            libra_error_free(&err); // e.g. name vanished between builds; not fatal
+        update();
+        return;
     }
 }
 
@@ -241,7 +316,11 @@ QSize VideoWidget::sourceSize() const
 {
     if (m_forcedSource.isValid())
         return m_forcedSource;
+    return videoSize();
+}
 
+QSize VideoWidget::videoSize() const
+{
     int64_t w = 0, h = 0;
     mpv_get_property(m_mpv, "dwidth", MPV_FORMAT_INT64, &w);
     mpv_get_property(m_mpv, "dheight", MPV_FORMAT_INT64, &h);
@@ -250,6 +329,8 @@ QSize VideoWidget::sourceSize() const
 
 void VideoWidget::open(const QStringList &files, bool append)
 {
+    if (!append)
+        setPaused(false); // opening a file is an explicit request to play it
     bool first = true;
     for (const QString &f : files) {
         const QByteArray path = f.toUtf8();
@@ -279,6 +360,7 @@ QList<PlaylistEntry> VideoWidget::playlist() const
 
 void VideoWidget::playIndex(int index)
 {
+    setPaused(false); // double-clicking an entry means play it, even after a paused restore
     const QByteArray v = QByteArray::number(index);
     command({ "playlist-play-index", v.constData() });
 }
@@ -297,8 +379,13 @@ void VideoWidget::removePlaylistEntry(int index)
     command({ "playlist-remove", v.constData() });
 }
 
-void VideoWidget::loadList(const QString &m3uPath)
+void VideoWidget::loadList(const QString &m3uPath, bool autoplay)
 {
+    // Restoring at startup should bring the playlist back without launching into playback.
+    // loadlist always makes entry 0 current and plays it, so pre-set pause to hold on frame 0;
+    // any explicit play action (open, playIndex, the play button) clears it again.
+    if (!autoplay)
+        setPaused(true);
     const QByteArray p = m3uPath.toUtf8();
     command({ "loadlist", p.constData(), "replace" });
 }
@@ -411,6 +498,8 @@ void VideoWidget::pumpMpvEvents()
                 emit titleChanged(QString::fromUtf8(*static_cast<char **>(p->data)));
             else if (name == QLatin1String("track-list/count"))
                 emit tracksChanged();
+            else if (name == QLatin1String("dwidth") || name == QLatin1String("dheight"))
+                emit videoSizeChanged(videoSize());
             break;
         }
         case MPV_EVENT_LOG_MESSAGE: {

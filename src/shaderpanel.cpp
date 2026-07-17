@@ -336,10 +336,20 @@ ShaderPanel::ShaderPanel(const QString &root, QWidget *parent)
         emit presetChosen(m_current.isEmpty() ? QString() : absolute(m_current));
     });
 
+    scan();
+
     const QStringList favs = settings()->value(QStringLiteral("shaders/favourites")).toStringList();
     m_favourites = QSet<QString>(favs.begin(), favs.end());
 
-    scan();
+    // First run: start people off with crt-royale starred rather than an empty Favourites tab.
+    // Guarded on the settings key, not on the set being empty, so clearing every favourite by
+    // hand stays cleared across restarts.
+    if (!settings()->contains(QStringLiteral("shaders/favourites"))) {
+        const QString seed = QStringLiteral("crt/crt-royale.slangp");
+        if (m_all.contains(seed))
+            setFavourite(seed, true);
+    }
+
     rebuild();
 }
 

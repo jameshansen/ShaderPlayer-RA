@@ -4,9 +4,11 @@
 
 class VideoWidget;
 class ShaderPanel;
+class ShaderParamsPanel;
 class PlaylistPanel;
 class QAction;
 class QActionGroup;
+class QDockWidget;
 class QLabel;
 class QMenu;
 class QSlider;
@@ -31,6 +33,7 @@ protected:
 public slots:
     void setFullscreen(bool on);
     void toggleFullscreen();
+    void scaleTo(int factor);   // resize so the video shows at factor x its pixel size
 
 private:
     void buildMenus();
@@ -43,12 +46,15 @@ private:
 
     VideoWidget *m_video = nullptr;
     ShaderPanel *m_shaders = nullptr;
+    ShaderParamsPanel *m_params = nullptr;
     PlaylistPanel *m_playlist = nullptr;
 
     QMenu *m_subtitleMenu = nullptr;
     QActionGroup *m_sourceGroup = nullptr;
     QAction *m_customSourceAction = nullptr;
     QAction *m_fullscreenAction = nullptr;
+    QDockWidget *m_libraryDock = nullptr;
+    QDockWidget *m_paramsDock = nullptr;
     QByteArray m_preFullscreenState;   // dock layout to put back on the way out
 
     QToolButton *m_playButton = nullptr;
@@ -58,4 +64,6 @@ private:
 
     double m_duration = 0.0;
     bool m_seeking = false;
+    int m_scaleFactor = 2;      // last chosen video scale; startup applies it once
+    bool m_scaledOnce = false;  // guards the one-time startup snap against later files
 };
