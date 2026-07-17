@@ -12,6 +12,51 @@
 #include <QTextStream>
 #include <QTimer>
 
+#include <windows.h>
+#include <dbghelp.h>
+
+// Which module did we die in? An access violation inside libmpv means something very
+// different from one inside our own code, and the log alone cannot tell them apart.
+static void logModuleFor(void *addr, const char *label)
+{
+    HMODULE mod = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(addr), &mod) || !mod) {
+        qCritical("%s %p <unknown module>", label, addr);
+        return;
+    }
+    char path[MAX_PATH] = {};
+    GetModuleFileNameA(mod, path, MAX_PATH);
+    const char *base = strrchr(path, '\\');
+    qCritical("%s %p  %s+0x%llx", label, addr, base ? base + 1 : path,
+              static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(addr)
+                                              - reinterpret_cast<uintptr_t>(mod)));
+}
+
+static LONG WINAPI crashHandler(EXCEPTION_POINTERS *info)
+{
+    qCritical("=== CRASH code=0x%08lX ===", info->ExceptionRecord->ExceptionCode);
+    logModuleFor(info->ExceptionRecord->ExceptionAddress, "faulting address:");
+
+    CONTEXT ctx = *info->ContextRecord;
+    STACKFRAME64 frame = {};
+    frame.AddrPC.Offset = ctx.Rip;      frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrFrame.Offset = ctx.Rbp;   frame.AddrFrame.Mode = AddrModeFlat;
+    frame.AddrStack.Offset = ctx.Rsp;   frame.AddrStack.Mode = AddrModeFlat;
+
+    HANDLE proc = GetCurrentProcess();
+    for (int i = 0; i < 24; ++i) {
+        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, GetCurrentThread(), &frame, &ctx,
+                         nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr))
+            break;
+        if (!frame.AddrPC.Offset)
+            break;
+        logModuleFor(reinterpret_cast<void *>(frame.AddrPC.Offset), "  frame:");
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 // A WIN32-subsystem app has no console, so qDebug/qCritical would vanish. Tee them to a file.
 static void logToFile(QtMsgType type, const QMessageLogContext &, const QString &msg)
 {
@@ -30,6 +75,9 @@ int main(int argc, char **argv)
     app.setOrganizationName(QStringLiteral("ShaderPlayer"));
     app.setApplicationName(QStringLiteral("ShaderPlayer-RA"));
     qInstallMessageHandler(logToFile);
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
+    SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+    SetUnhandledExceptionFilter(crashHandler);
 
     // Dark suits a video player, and it keeps the chrome from glowing next to the picture.
     // The style has to change too: windowsvista (Qt's default on Windows 10) hardcodes light

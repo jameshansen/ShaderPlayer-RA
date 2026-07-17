@@ -300,6 +300,10 @@ void MainWindow::buildTransport()
         m_video->seekTo(m_seek->value() / 1000.0);
     });
     connect(m_volume, &QSlider::valueChanged, m_video, &VideoWidget::setVolume);
+    // Persist as it changes, not just on close: a crash or a kill would otherwise lose it.
+    connect(m_volume, &QSlider::valueChanged, this, [](int v) {
+        settings()->setValue(QStringLiteral("volume"), v);
+    });
 
     connect(m_video, &VideoWidget::durationChanged, this, [this](double d) {
         m_duration = d;
@@ -473,7 +477,6 @@ void MainWindow::closeEvent(QCloseEvent *e)
     QSettings *s = settings();
     s->setValue(QStringLiteral("window/geometry"), saveGeometry());
     s->setValue(QStringLiteral("window/state"), saveState());
-    s->setValue(QStringLiteral("volume"), m_volume->value());
     s->setValue(QStringLiteral("shaders/lastPreset"), m_video->preset());
     s->sync();
     m_playlist->save();

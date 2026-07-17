@@ -82,7 +82,12 @@ VideoWidget::VideoWidget(QWidget *parent)
 
     // vo=libmpv routes video into the render API instead of mpv's own window.
     mpv_set_option_string(m_mpv, "vo", "libmpv");
-    mpv_set_option_string(m_mpv, "hwdec", "auto-safe");
+    // Copy-back, not direct. render_gl.h: "Windows: ANGLE is required" for hardware decoding
+    // through the GL render API, and Qt 6 dropped ANGLE, so we hand mpv a desktop WGL context
+    // that the d3d11va interop cannot use. Plain auto-safe picks d3d11va regardless and dies
+    // inside mpv's own decode thread on any file the GPU accepts. The copy-back modes need no
+    // GL interop at all: the GPU still decodes, we just pay a frame copy back to RAM.
+    mpv_set_option_string(m_mpv, "hwdec", "auto-copy-safe");
     // Without idle=yes mpv tears down once the playlist ends and the widget goes dead.
     mpv_set_option_string(m_mpv, "idle", "yes");
     mpv_set_option_string(m_mpv, "msg-level", "all=warn");
@@ -323,8 +328,11 @@ QList<SubtitleTrack> VideoWidget::subtitleTracks() const
 
 int64_t VideoWidget::currentSubtitleTrack() const
 {
+    // "auto" means mpv has not picked a track yet; it is not track 0 (ids start at 1), and
+    // reading it as one left every entry in the Subtitles menu unchecked.
     const QString sid = mpvString(m_mpv, QStringLiteral("sid"));
-    return (sid.isEmpty() || sid == QLatin1String("no")) ? -1 : sid.toLongLong();
+    return (sid.isEmpty() || sid == QLatin1String("no") || sid == QLatin1String("auto"))
+               ? -1 : sid.toLongLong();
 }
 
 void VideoWidget::setSubtitleTrack(int64_t id)

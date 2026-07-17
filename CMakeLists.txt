@@ -40,6 +40,7 @@ target_link_libraries(ShaderPlayer PRIVATE
     "${EXTERN}/mpv/libmpv.lib"
     "${EXTERN}/librashader/librashader.dll.lib"
     opengl32
+    dbghelp
 )
 
 # Both DLLs and the Qt runtime need to sit next to the .exe to run from the build dir.
