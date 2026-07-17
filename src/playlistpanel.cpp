@@ -5,13 +5,17 @@
 
 #include <QAbstractItemModel>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QKeyEvent>
 #include <QListWidget>
 #include <QMenu>
+#include <QMimeData>
 #include <QProcess>
 #include <QTextStream>
+#include <QUrl>
 #include <QVBoxLayout>
 
 PlaylistPanel::PlaylistPanel(VideoWidget *video, QWidget *parent)
@@ -21,6 +25,7 @@ PlaylistPanel::PlaylistPanel(VideoWidget *video, QWidget *parent)
     m_list->setDragDropMode(QAbstractItemView::InternalMove);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_list->viewport()->installEventFilter(this);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 4, 4, 4);
@@ -64,6 +69,33 @@ PlaylistPanel::PlaylistPanel(VideoWidget *video, QWidget *parent)
     });
 
     refresh();
+}
+
+bool PlaylistPanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched != m_list->viewport())
+        return QWidget::eventFilter(watched, event);
+
+    const QEvent::Type type = event->type();
+    if (type != QEvent::DragEnter && type != QEvent::DragMove && type != QEvent::Drop)
+        return QWidget::eventFilter(watched, event);
+
+    // A drag from inside the app has a source widget; that is the reorder, and it stays the
+    // view's business. A null source means it came from Explorer, which is an append.
+    auto *drop = static_cast<QDropEvent *>(event);
+    if (drop->source() || !drop->mimeData()->hasUrls())
+        return QWidget::eventFilter(watched, event);
+
+    if (type == QEvent::Drop) {
+        QStringList files;
+        for (const QUrl &url : drop->mimeData()->urls())
+            if (url.isLocalFile())
+                files.append(url.toLocalFile());
+        if (!files.isEmpty())
+            m_video->open(files, /*append=*/true);
+    }
+    drop->acceptProposedAction();
+    return true;
 }
 
 void PlaylistPanel::refresh()

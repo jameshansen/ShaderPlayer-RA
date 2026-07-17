@@ -3,7 +3,6 @@
 #include "appdata.h"
 
 #include <QApplication>
-#include <QCheckBox>
 #include <QDesktopServices>
 #include <QDir>
 #include <QDirIterator>
@@ -11,18 +10,22 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QIcon>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QProcess>
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QStyledItemDelegate>
 #include <QTextStream>
 #include <QTreeWidget>
 #include <QUrl>
@@ -31,6 +34,48 @@
 namespace {
 
 constexpr int PathRole = Qt::UserRole + 1;   // relative path; absent on folder nodes
+constexpr int FavRole = Qt::UserRole + 2;    // bool; absent on folder nodes and on "None"
+
+constexpr int kStar = 16;      // star icon, logical px
+constexpr int kStarPad = 4;
+
+// The star's hit box, right-aligned in whatever row rect it is given. Shared so the painting
+// and the click test cannot drift apart.
+QRect starRect(const QRect &row)
+{
+    return QRect(row.right() - kStar - kStarPad,
+                 row.top() + (row.height() - kStar) / 2, kStar, kStar);
+}
+
+// Draws the favourite star on the right of each shader row: greyed when it is not a
+// favourite, full colour when it is. Rows without FavRole (folders, "None") get none.
+class StarDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
+    {
+        const QVariant fav = idx.data(FavRole);
+        QStyleOptionViewItem o(opt);
+        // Shrink the row the text is laid out in, so a long name elides before the star
+        // instead of running underneath it.
+        if (fav.isValid())
+            o.rect.setRight(o.rect.right() - kStar - 2 * kStarPad);
+        QStyledItemDelegate::paint(p, o, idx);
+        if (!fav.isValid())
+            return;
+
+        // QIcon::Disabled asks the style for the greyed variant rather than us fading it by hand.
+        const qreal dpr = opt.widget ? opt.widget->devicePixelRatioF() : 1.0;
+        p->drawPixmap(starRect(opt.rect),
+                      m_star.pixmap(QSize(kStar, kStar), dpr,
+                                    fav.toBool() ? QIcon::Normal : QIcon::Disabled));
+    }
+
+private:
+    QIcon m_star{QStringLiteral(":/icons/star.ico")};
+};
 
 QString settingsKey(const QString &relative, const char *field)
 {
@@ -185,14 +230,6 @@ ShaderCard::ShaderCard(const QString &relative, const ShaderInfo &info, QWidget 
     setFrameShape(QFrame::StyledPanel);
     setContextMenuPolicy(Qt::CustomContextMenu);
 
-    m_check = new QCheckBox(this);
-    m_check->setChecked(true); // it is in the favourites list, so by definition
-    m_check->setToolTip(tr("Remove from favourites"));
-    connect(m_check, &QCheckBox::toggled, this, [this](bool on) {
-        if (!on)
-            emit unfavourited(m_relative);
-    });
-
     auto *icon = new QLabel(this);
     const QIcon ic = info.iconPath.isEmpty() ? defaultIcon() : QIcon(info.iconPath);
     icon->setPixmap(ic.pixmap(40, 40));
@@ -227,7 +264,6 @@ ShaderCard::ShaderCard(const QString &relative, const ShaderInfo &info, QWidget 
 
     auto *row = new QHBoxLayout(this);
     row->setContentsMargins(4, 4, 4, 4);
-    row->addWidget(m_check);
     row->addWidget(icon);
     row->addLayout(text, 1);
 }
@@ -272,6 +308,12 @@ ShaderPanel::ShaderPanel(const QString &root, QWidget *parent)
     m_tree = new QTreeWidget(this);
     m_tree->setHeaderHidden(true);
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_tree->setItemDelegate(new StarDelegate(m_tree));
+    m_tree->viewport()->installEventFilter(this);
+    // Stretch keeps the column exactly as wide as the viewport, which is what puts the star
+    // against the panel's right edge instead of off in a scrolled-away region.
+    m_tree->header()->setSectionResizeMode(QHeaderView::Stretch);
+    m_tree->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(m_favList);
@@ -380,9 +422,6 @@ void ShaderPanel::rebuildFavourites()
             emit presetChosen(absolute(r));
             rebuildFavourites();
         });
-        connect(card, &ShaderCard::unfavourited, this, [this](const QString &r) {
-            setFavourite(r, false);
-        });
         connect(card, &ShaderCard::customContextMenuRequested, this, [this, card, rel](const QPoint &p) {
             cardContextMenu(rel, card->mapToGlobal(p));
         });
@@ -434,9 +473,8 @@ void ShaderPanel::rebuildTree()
         }
         auto *leaf = new QTreeWidgetItem(parent, { QFileInfo(rel).completeBaseName() });
         leaf->setData(0, PathRole, rel);
+        leaf->setData(0, FavRole, m_favourites.contains(rel)); // the delegate draws the star
         leaf->setToolTip(0, rel);
-        // The checkbox is the star: tick it to favourite, untick to drop it.
-        leaf->setCheckState(0, m_favourites.contains(rel) ? Qt::Checked : Qt::Unchecked);
         if (rel == m_current)
             m_tree->setCurrentItem(leaf);
     }
@@ -444,13 +482,28 @@ void ShaderPanel::rebuildTree()
     allRoot->setExpanded(true);
     if (!needle.isEmpty() && matches.size() <= 200)
         m_tree->expandAll();
+}
 
-    // Connected after populating so setCheckState above doesn't fire it.
-    connect(m_tree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *item, int) {
-        const QVariant rel = item->data(0, PathRole);
-        if (rel.isValid() && !rel.toString().isEmpty())
-            setFavourite(rel.toString(), item->checkState(0) == Qt::Checked);
-    }, Qt::UniqueConnection);
+bool ShaderPanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched != m_tree->viewport() || event->type() != QEvent::MouseButtonPress)
+        return QWidget::eventFilter(watched, event);
+
+    auto *me = static_cast<QMouseEvent *>(event);
+    QTreeWidgetItem *item = m_tree->itemAt(me->position().toPoint());
+    if (me->button() != Qt::LeftButton || !item)
+        return QWidget::eventFilter(watched, event);
+
+    const QVariant fav = item->data(0, FavRole);
+    if (!fav.isValid() || !starRect(m_tree->visualItemRect(item)).contains(me->position().toPoint()))
+        return QWidget::eventFilter(watched, event);
+
+    // Swallow the press: hitting the star toggles the favourite and nothing else. Letting it
+    // through would also make this the active shader, which is not what the star means.
+    const bool on = !fav.toBool();
+    item->setData(0, FavRole, on);
+    setFavourite(item->data(0, PathRole).toString(), on);
+    return true;
 }
 
 void ShaderPanel::setFavourite(const QString &relative, bool on)
@@ -553,7 +606,8 @@ void ShaderPanel::treeContextMenu(const QPoint &pos)
 
     QAction *chosen = menu.exec(m_tree->viewport()->mapToGlobal(pos));
     if (chosen == toggle) {
-        item->setCheckState(0, fav ? Qt::Unchecked : Qt::Checked); // itemChanged does the rest
+        item->setData(0, FavRole, !fav);   // repaints the star
+        setFavourite(relative, !fav);
     } else if (chosen == reveal) {
         revealInExplorer(relative);
     }

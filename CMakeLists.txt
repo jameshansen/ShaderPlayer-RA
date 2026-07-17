@@ -4,6 +4,8 @@ project(ShaderPlayer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+# Small UI assets are compiled into the exe, so there is no icons/ to deploy or resolve.
+set(CMAKE_AUTORCC ON)
 
 set(CMAKE_PREFIX_PATH "C:/Qt/6.8.3/msvc2022_64" CACHE STRING "Qt install prefix")
 find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGLWidgets)
@@ -17,6 +19,7 @@ add_executable(ShaderPlayer WIN32
     src/playlistpanel.cpp
     src/shaderpanel.cpp
     src/videowidget.cpp
+    resources.qrc
 )
 
 target_include_directories(ShaderPlayer PRIVATE

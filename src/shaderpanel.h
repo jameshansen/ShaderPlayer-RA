@@ -6,7 +6,6 @@
 #include <QStringList>
 #include <QWidget>
 
-class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -23,7 +22,8 @@ struct ShaderInfo {
     QString iconPath;   // empty = default icon
 };
 
-// One row of the verbose favourites view: [x] [icon] name / author / website.
+// One row of the verbose favourites view: [icon] name / author / website. Being highlighted
+// is what marks it active; unfavouriting lives in the context menu.
 class ShaderCard : public QFrame
 {
     Q_OBJECT
@@ -34,14 +34,12 @@ public:
 
 signals:
     void clicked(const QString &relative);
-    void unfavourited(const QString &relative);
 
 protected:
     void mousePressEvent(QMouseEvent *e) override;
 
 private:
     QString m_relative;
-    QCheckBox *m_check = nullptr;
 };
 
 // Right-hand Shaders tab: a verbose favourites list, or the full tree.
@@ -56,6 +54,10 @@ public:
 
 signals:
     void presetChosen(const QString &absolutePath); // empty means passthrough
+
+protected:
+    // Catches clicks on the star before the tree turns them into a selection.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void scan();

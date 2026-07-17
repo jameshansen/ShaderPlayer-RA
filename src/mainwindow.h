@@ -28,6 +28,10 @@ protected:
     void dragEnterEvent(QDragEnterEvent *e) override;
     void dropEvent(QDropEvent *e) override;
 
+public slots:
+    void setFullscreen(bool on);
+    void toggleFullscreen();
+
 private:
     void buildMenus();
     void buildTransport();
@@ -44,6 +48,8 @@ private:
     QMenu *m_subtitleMenu = nullptr;
     QActionGroup *m_sourceGroup = nullptr;
     QAction *m_customSourceAction = nullptr;
+    QAction *m_fullscreenAction = nullptr;
+    QByteArray m_preFullscreenState;   // dock layout to put back on the way out
 
     QToolButton *m_playButton = nullptr;
     QSlider *m_seek = nullptr;

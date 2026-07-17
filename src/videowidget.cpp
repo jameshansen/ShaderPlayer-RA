@@ -5,6 +5,7 @@
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QOpenGLContext>
+#include <QRect>
 #include <stdexcept>
 #include <vector>
 
@@ -47,6 +48,19 @@ void checkLibra(libra_error_t err, const char *what)
     throw std::runtime_error(msg);
 }
 
+// Scale src to fit inside outW x outH without distorting it, centred. The leftover is black bars.
+// Centring is what makes the FLIP_Y convention irrelevant here: the margins are symmetric.
+QRect fitRect(const QSize &src, int outW, int outH)
+{
+    const double aspect = double(src.width()) / double(src.height());
+    int w = outW, h = int(qRound(outW / aspect));
+    if (h > outH) {
+        h = outH;
+        w = int(qRound(outH * aspect));
+    }
+    return QRect((outW - w) / 2, (outH - h) / 2, w, h);
+}
+
 QString mpvString(mpv_handle *mpv, const QString &prop)
 {
     char *v = nullptr;
@@ -83,6 +97,10 @@ VideoWidget::VideoWidget(QWidget *parent)
     mpv_observe_property(m_mpv, 0, "track-list/count", MPV_FORMAT_INT64);
     // MPV_FORMAT_NONE fires on any playlist change, including a reorder that leaves the count alone.
     mpv_observe_property(m_mpv, 0, "playlist", MPV_FORMAT_NONE);
+
+    // ponytail: fixed 60Hz rather than chasing the real refresh rate. Only runs while paused.
+    m_paintTimer.setInterval(16);
+    connect(&m_paintTimer, &QTimer::timeout, this, qOverload<>(&QWidget::update));
 
     mpv_request_log_messages(m_mpv, "info");
     mpv_set_wakeup_callback(m_mpv, [](void *ctx) {
@@ -343,6 +361,12 @@ void VideoWidget::setVolume(int volume)
     mpv_set_property(m_mpv, "volume", MPV_FORMAT_DOUBLE, &v);
 }
 
+void VideoWidget::mouseDoubleClickEvent(QMouseEvent *e)
+{
+    Q_UNUSED(e);
+    emit doubleClicked();
+}
+
 void VideoWidget::pumpMpvEvents()
 {
     while (m_mpv) {
@@ -367,8 +391,14 @@ void VideoWidget::pumpMpvEvents()
                 emit positionChanged(*static_cast<double *>(p->data));
             else if (name == QLatin1String("duration"))
                 emit durationChanged(*static_cast<double *>(p->data));
-            else if (name == QLatin1String("pause"))
-                emit pausedChanged(*static_cast<int *>(p->data) != 0);
+            else if (name == QLatin1String("pause")) {
+                const bool paused = *static_cast<int *>(p->data) != 0;
+                if (paused)
+                    m_paintTimer.start();
+                else
+                    m_paintTimer.stop(); // mpv's update callback takes over again
+                emit pausedChanged(paused);
+            }
             else if (name == QLatin1String("media-title"))
                 emit titleChanged(QString::fromUtf8(*static_cast<char **>(p->data)));
             else if (name == QLatin1String("track-list/count"))
@@ -415,18 +445,23 @@ FrameStats VideoWidget::probe(GLuint fbo, int w, int h)
     doneCurrent();
 
     quint64 sumR = 0, sumG = 0, sumB = 0, lit = 0;
+    quint64 hash = 1469598103934665603ULL; // FNV-1a
     const size_t n = size_t(w) * size_t(h);
     for (size_t i = 0; i < n; ++i) {
         const unsigned char r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
         sumR += r; sumG += g; sumB += b;
         if (int(r) + int(g) + int(b) > 24) // ignore near-black noise
             ++lit;
+        hash = (hash ^ r) * 1099511628211ULL;
+        hash = (hash ^ g) * 1099511628211ULL;
+        hash = (hash ^ b) * 1099511628211ULL;
     }
 
     st.valid = true;
     st.width = w; st.height = h;
     st.nonBlack = double(lit) / double(n);
     st.meanR = int(sumR / n); st.meanG = int(sumG / n); st.meanB = int(sumB / n);
+    st.hash = hash;
     return st;
 }
 
@@ -501,7 +536,10 @@ void VideoWidget::paintGL()
         return;
     }
 
-    resizeTargets(src.width(), src.height(), outW, outH);
+    // The chain renders at the letterboxed size, not the widget size, so the shader never sees
+    // a stretched frame and the bars stay outside it.
+    const QRect dst = fitRect(src, outW, outH);
+    resizeTargets(src.width(), src.height(), dst.width(), dst.height());
 
     // 1. mpv decodes and renders the frame (including subtitles) into m_srcFbo.
     mpv_opengl_fbo fbo{ int(m_srcFbo), src.width(), src.height(), GL_RGBA8 };
@@ -519,8 +557,8 @@ void VideoWidget::paintGL()
     int readW = src.width(), readH = src.height();
     if (m_chain) {
         libra_image_gl_t in{ m_srcTex, GL_RGBA8, uint32_t(src.width()), uint32_t(src.height()) };
-        libra_image_gl_t out{ m_outTex, GL_RGBA8, uint32_t(outW), uint32_t(outH) };
-        libra_viewport_t vp{ 0.0f, 0.0f, uint32_t(outW), uint32_t(outH) };
+        libra_image_gl_t out{ m_outTex, GL_RGBA8, uint32_t(dst.width()), uint32_t(dst.height()) };
+        libra_viewport_t vp{ 0.0f, 0.0f, uint32_t(dst.width()), uint32_t(dst.height()) };
         libra_error_t err = libra_gl_filter_chain_frame(&m_chain, m_frame++, in, out, &vp, nullptr, nullptr);
         if (err) {
             static bool once = false;
@@ -537,13 +575,20 @@ void VideoWidget::paintGL()
             glBindSampler(unit, 0);
 
         readFbo = m_outFbo;
-        readW = outW; readH = outH;
+        readW = dst.width(); readH = dst.height();
     }
 
-    // 3. Blit the result onto the widget.
+    // 3. Blit the result onto the widget, centred. Clearing first is what paints the bars.
+    glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
     glBindFramebuffer(GL_READ_FRAMEBUFFER, readFbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, defaultFramebufferObject());
-    glBlitFramebuffer(0, 0, readW, readH, 0, 0, outW, outH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBlitFramebuffer(0, 0, readW, readH,
+                      dst.x(), dst.y(), dst.x() + dst.width(), dst.y() + dst.height(),
+                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
     glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
     ++m_painted;
 }

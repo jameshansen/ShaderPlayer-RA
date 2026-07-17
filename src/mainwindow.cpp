@@ -15,8 +15,10 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPainter>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
@@ -52,6 +54,67 @@ QString formatTime(double seconds)
 const char *kVideoFilter =
     "Video files (*.mp4 *.mkv *.avi *.mov *.webm *.m4v *.wmv *.flv *.ts *.mpg *.mpeg);;All files (*)";
 
+const QColor kLed(0x4a, 0xff, 0x6a);
+
+// Recolour a stock icon to LED green. A stylesheet cannot reach inside a QIcon, so tint the
+// pixmap: SourceIn keeps the glyph's alpha and replaces every colour under it.
+QIcon ledIcon(QStyle *style, QStyle::StandardPixmap sp, int size = 22)
+{
+    QPixmap pm = style->standardIcon(sp).pixmap(size, size);
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), kLed);
+    p.end();
+    return QIcon(pm);
+}
+
+// Recessed well: the gradient runs dark-at-top to lighter-at-bottom and the bevel is dark on
+// top, light on the bottom -- the reverse of a raised button, which is what reads as inset.
+const char *kTransportStyle = R"(
+QToolButton {
+    border: 1px solid #0d0d0d;
+    border-top-color: #050505;
+    border-bottom-color: #3a3a3a;
+    border-radius: 5px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #121212, stop:1 #262626);
+    padding: 5px;
+}
+QToolButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a1a1a, stop:1 #303030);
+}
+QToolButton:pressed {
+    background: #0c0c0c;
+    border-top-color: #000000;
+    border-bottom-color: #202020;
+}
+
+/* Same recessed well as the buttons, so the sliders read as cut into the same panel.
+   sub-page is the travelled part, which makes the groove light up as it fills. */
+QSlider::groove:horizontal {
+    height: 6px;
+    border: 1px solid #0d0d0d;
+    border-top-color: #050505;
+    border-bottom-color: #3a3a3a;
+    border-radius: 3px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0e0e0e, stop:1 #222222);
+}
+QSlider::sub-page:horizontal {
+    border: 1px solid #0d0d0d;
+    border-radius: 3px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1f8f35, stop:1 #4aff6a);
+}
+QSlider::handle:horizontal {
+    width: 10px;
+    margin: -4px 0;
+    border: 1px solid #072d10;
+    border-radius: 5px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #b6ffc6, stop:1 #35d451);
+}
+QSlider::handle:horizontal:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d8ffe1, stop:1 #4aff6a);
+}
+)";
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -85,6 +148,7 @@ MainWindow::MainWindow(QWidget *parent)
                              tr("%1\n\nFalling back to no shader.").arg(msg));
         m_shaders->setCurrentPreset(QString());
     });
+    connect(m_video, &VideoWidget::doubleClicked, this, &MainWindow::toggleFullscreen);
     connect(m_video, &VideoWidget::tracksChanged, this, &MainWindow::rebuildSubtitleMenu);
     connect(m_video, &VideoWidget::titleChanged, this, [this](const QString &t) {
         setWindowTitle(t.isEmpty() ? QStringLiteral("ShaderPlayer-RA")
@@ -111,6 +175,19 @@ void MainWindow::buildMenus()
     play->addAction(tr("Back 10s"), Qt::Key_Left, this, [this] { m_video->seekRelative(-10); });
     play->addAction(tr("Forward 10s"), Qt::Key_Right, this, [this] { m_video->seekRelative(10); });
 
+    QMenu *view = menuBar()->addMenu(tr("&View"));
+    m_fullscreenAction = view->addAction(tr("&Fullscreen"), Qt::Key_F11, this,
+                                         &MainWindow::toggleFullscreen);
+    m_fullscreenAction->setCheckable(true);
+    // The menu bar is hidden in fullscreen, so its actions can't be relied on for the way
+    // back out. These live on the window instead.
+    addAction(m_fullscreenAction);
+
+    auto *escape = new QAction(this);
+    escape->setShortcut(Qt::Key_Escape);
+    connect(escape, &QAction::triggered, this, [this] { setFullscreen(false); });
+    addAction(escape);
+
     m_subtitleMenu = menuBar()->addMenu(tr("&Subtitles"));
     rebuildSubtitleMenu();
 
@@ -127,6 +204,8 @@ void MainWindow::buildMenus()
         { QT_TR_NOOP("256 x 224 (NES / SNES)"), QSize(256, 224) },
         { QT_TR_NOOP("320 x 240 (240p)"), QSize(320, 240) },
         { QT_TR_NOOP("640 x 480 (480p)"), QSize(640, 480) },
+        { QT_TR_NOOP("1280 x 720 (720p)"), QSize(1280, 720) },
+        { QT_TR_NOOP("1920 x 1080 (1080p)"), QSize(1920, 1080) },
     };
     for (const Preset &p : presets) {
         QAction *a = res->addAction(tr(p.label));
@@ -156,14 +235,25 @@ void MainWindow::buildMenus()
 void MainWindow::buildTransport()
 {
     auto *bar = new QWidget(this);
+    bar->setStyleSheet(QLatin1String(kTransportStyle));
     auto *layout = new QHBoxLayout(bar);
-    layout->setContentsMargins(6, 4, 6, 4);
+    // The glow is drawn outside the button's own rect, so leave it room to spill.
+    layout->setContentsMargins(10, 7, 10, 7);
+    layout->setSpacing(8);
 
     auto button = [&](QStyle::StandardPixmap icon, const QString &tip, auto slot) {
         auto *b = new QToolButton(bar);
-        b->setIcon(style()->standardIcon(icon));
+        b->setIcon(ledIcon(style(), icon));
         b->setToolTip(tip);
-        b->setAutoRaise(true);
+        b->setAutoRaise(false); // the stylesheet supplies the look
+
+        // Offset 0 turns a drop shadow into a halo -- the cheapest honest glow going.
+        auto *glow = new QGraphicsDropShadowEffect(b);
+        glow->setColor(kLed);
+        glow->setOffset(0, 0);
+        glow->setBlurRadius(14);
+        b->setGraphicsEffect(glow);
+
         connect(b, &QToolButton::clicked, m_video, slot);
         layout->addWidget(b);
         return b;
@@ -181,7 +271,14 @@ void MainWindow::buildTransport()
     layout->addWidget(m_timeLabel);
 
     auto *volIcon = new QLabel(bar);
-    volIcon->setPixmap(style()->standardIcon(QStyle::SP_MediaVolume).pixmap(16, 16));
+    volIcon->setPixmap(ledIcon(style(), QStyle::SP_MediaVolume, 16).pixmap(16, 16));
+    // A label has no background of its own, so here the halo hugs the glyph rather than a
+    // rounded rect -- the speaker actually bleeds light.
+    auto *volGlow = new QGraphicsDropShadowEffect(volIcon);
+    volGlow->setColor(kLed);
+    volGlow->setOffset(0, 0);
+    volGlow->setBlurRadius(10);
+    volIcon->setGraphicsEffect(volGlow);
     layout->addWidget(volIcon);
 
     m_volume = new QSlider(Qt::Horizontal, bar);
@@ -214,9 +311,36 @@ void MainWindow::buildTransport()
         m_timeLabel->setText(formatTime(p) + QStringLiteral(" / ") + formatTime(m_duration));
     });
     connect(m_video, &VideoWidget::pausedChanged, this, [this](bool paused) {
-        m_playButton->setIcon(style()->standardIcon(paused ? QStyle::SP_MediaPlay
-                                                           : QStyle::SP_MediaPause));
+        m_playButton->setIcon(ledIcon(style(), paused ? QStyle::SP_MediaPlay
+                                                      : QStyle::SP_MediaPause));
     });
+}
+
+void MainWindow::toggleFullscreen()
+{
+    setFullscreen(!isFullScreen());
+}
+
+void MainWindow::setFullscreen(bool on)
+{
+    if (on == isFullScreen())
+        return;
+
+    if (on) {
+        // saveState/restoreState round-trips which docks the user actually had open, so
+        // leaving fullscreen doesn't resurrect ones they'd closed.
+        m_preFullscreenState = saveState();
+        for (QDockWidget *d : findChildren<QDockWidget *>())
+            d->hide();
+        menuBar()->hide();
+        showFullScreen();
+    } else {
+        showNormal();
+        menuBar()->show();
+        if (!m_preFullscreenState.isEmpty())
+            restoreState(m_preFullscreenState);
+    }
+    m_fullscreenAction->setChecked(on);
 }
 
 void MainWindow::rebuildSubtitleMenu()
@@ -343,6 +467,9 @@ void MainWindow::restoreSettings()
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
+    // Quitting fullscreen would otherwise persist a hidden menu bar and no docks.
+    setFullscreen(false);
+
     QSettings *s = settings();
     s->setValue(QStringLiteral("window/geometry"), saveGeometry());
     s->setValue(QStringLiteral("window/state"), saveState());

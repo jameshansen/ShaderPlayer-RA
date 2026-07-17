@@ -4,6 +4,7 @@
 #include <QOpenGLFunctions_3_3_Core>
 #include <QSize>
 #include <QString>
+#include <QTimer>
 
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
@@ -27,6 +28,10 @@ struct FrameStats {
     int width = 0, height = 0;
     double nonBlack = 0.0;      // fraction of pixels above the black threshold
     int meanR = 0, meanG = 0, meanB = 0;
+    // Content fingerprint. Means are useless for spotting an animated shader -- crt-royale's
+    // interlacing swaps which lines are real vs interpolated and barely moves the average --
+    // so comparing two frames needs the actual pixels.
+    quint64 hash = 0;
 
     QString toString() const;
 };
@@ -67,6 +72,10 @@ public:
     FrameStats probeSource();
     FrameStats probeOutput();
 
+    // Frames actually blitted. Watching this tick while paused is how the selftest proves the
+    // chain hasn't stalled.
+    size_t painted() const { return m_painted; }
+
 public slots:
     void togglePause();
     void setPaused(bool paused);
@@ -85,10 +94,12 @@ signals:
     void playlistChanged();
     void titleChanged(const QString &title);
     void shaderFailed(const QString &message);
+    void doubleClicked();
 
 protected:
     void initializeGL() override;
     void paintGL() override;
+    void mouseDoubleClickEvent(QMouseEvent *e) override;
 
 private slots:
     void pumpMpvEvents();
@@ -113,6 +124,10 @@ private:
     GLuint m_srcFbo = 0, m_srcTex = 0;   // mpv renders here
     GLuint m_outFbo = 0, m_outTex = 0;   // librashader renders here, we blit from it
     int m_srcW = 0, m_srcH = 0, m_outW = 0, m_outH = 0;
+
+    // While paused mpv stops handing us frames, so nothing would drive the chain and an
+    // animated preset would freeze. This keeps repainting the held frame through it.
+    QTimer m_paintTimer;
 
     size_t m_frame = 0;
     size_t m_painted = 0;                // frames actually blitted; 0 means nothing ever drew

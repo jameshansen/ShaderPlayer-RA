@@ -17,6 +17,10 @@ public:
     void save() const;      // write the current playlist to disk as m3u8
     void restore();         // load it back into mpv
 
+protected:
+    // Catches file drops on the list before the view treats them as a reorder.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void refresh();
 
