@@ -1,5 +1,7 @@
 build/
-extern/
+extern/*
+!extern/README.md
 out/
+release/
 .vs/
 CMakeUserPresets.json
