@@ -11,8 +11,10 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGLWidgets)
 set(EXTERN "${CMAKE_SOURCE_DIR}/extern")
 
 add_executable(ShaderPlayer WIN32
+    src/appdata.cpp
     src/main.cpp
     src/mainwindow.cpp
+    src/playlistpanel.cpp
     src/shaderpanel.cpp
     src/videowidget.cpp
 )

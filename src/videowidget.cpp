@@ -1,10 +1,12 @@
 #include "videowidget.h"
 
 #include <QApplication>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QOpenGLContext>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
@@ -79,6 +81,8 @@ VideoWidget::VideoWidget(QWidget *parent)
     mpv_observe_property(m_mpv, 0, "pause", MPV_FORMAT_FLAG);
     mpv_observe_property(m_mpv, 0, "media-title", MPV_FORMAT_STRING);
     mpv_observe_property(m_mpv, 0, "track-list/count", MPV_FORMAT_INT64);
+    // MPV_FORMAT_NONE fires on any playlist change, including a reorder that leaves the count alone.
+    mpv_observe_property(m_mpv, 0, "playlist", MPV_FORMAT_NONE);
 
     mpv_request_log_messages(m_mpv, "info");
     mpv_set_wakeup_callback(m_mpv, [](void *ctx) {
@@ -231,6 +235,51 @@ void VideoWidget::open(const QStringList &files, bool append)
     }
 }
 
+QList<PlaylistEntry> VideoWidget::playlist() const
+{
+    int64_t count = 0;
+    mpv_get_property(m_mpv, "playlist-count", MPV_FORMAT_INT64, &count);
+
+    QList<PlaylistEntry> out;
+    for (int64_t i = 0; i < count; ++i) {
+        PlaylistEntry e;
+        e.filename = mpvString(m_mpv, QString("playlist/%1/filename").arg(i));
+        const QString title = mpvString(m_mpv, QString("playlist/%1/title").arg(i));
+        e.title = title.isEmpty() ? QFileInfo(e.filename).fileName() : title;
+        if (e.title.isEmpty())
+            e.title = e.filename;
+        e.current = mpvString(m_mpv, QString("playlist/%1/current").arg(i)) == QLatin1String("yes");
+        out.append(e);
+    }
+    return out;
+}
+
+void VideoWidget::playIndex(int index)
+{
+    const QByteArray v = QByteArray::number(index);
+    command({ "playlist-play-index", v.constData() });
+}
+
+void VideoWidget::movePlaylistEntry(int from, int to)
+{
+    // mpv's playlist-move puts `from` in front of `to`, which is the same convention as
+    // Qt's rowsMoved destination, so the indices pass straight through.
+    const QByteArray f = QByteArray::number(from), t = QByteArray::number(to);
+    command({ "playlist-move", f.constData(), t.constData() });
+}
+
+void VideoWidget::removePlaylistEntry(int index)
+{
+    const QByteArray v = QByteArray::number(index);
+    command({ "playlist-remove", v.constData() });
+}
+
+void VideoWidget::loadList(const QString &m3uPath)
+{
+    const QByteArray p = m3uPath.toUtf8();
+    command({ "loadlist", p.constData(), "replace" });
+}
+
 QList<SubtitleTrack> VideoWidget::subtitleTracks() const
 {
     // Reading track-list through property paths avoids parsing an mpv_node tree.
@@ -305,6 +354,10 @@ void VideoWidget::pumpMpvEvents()
         case MPV_EVENT_PROPERTY_CHANGE: {
             auto *p = static_cast<mpv_event_property *>(ev->data);
             const QLatin1String name(p->name);
+            if (name == QLatin1String("playlist")) {
+                emit playlistChanged();
+                break;
+            }
             if (!p->data) {
                 if (name == QLatin1String("track-list/count"))
                     emit tracksChanged();

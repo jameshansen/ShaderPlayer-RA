@@ -14,6 +14,12 @@ struct SubtitleTrack {
     QString label;
 };
 
+struct PlaylistEntry {
+    QString title;      // media-title if mpv knows one, else the file name
+    QString filename;
+    bool current = false;
+};
+
 // What actually came out of a render stage. Enough to answer "is it black?" without a human
 // squinting at a screenshot.
 struct FrameStats {
@@ -49,6 +55,13 @@ public:
     QList<SubtitleTrack> subtitleTracks() const;
     int64_t currentSubtitleTrack() const;
 
+    // mpv owns the playlist; these just drive it.
+    QList<PlaylistEntry> playlist() const;
+    void playIndex(int index);
+    void movePlaylistEntry(int from, int to);
+    void removePlaylistEntry(int index);
+    void loadList(const QString &m3uPath);
+
     // Read back what mpv produced, and what the shader chain produced from it. Probing both
     // is what separates "mpv decoded nothing" from "the chain ate the frame".
     FrameStats probeSource();
@@ -69,6 +82,7 @@ signals:
     void durationChanged(double seconds);
     void pausedChanged(bool paused);
     void tracksChanged();
+    void playlistChanged();
     void titleChanged(const QString &title);
     void shaderFailed(const QString &message);
 

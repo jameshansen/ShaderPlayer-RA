@@ -24,15 +24,21 @@ $cases = @(
     @{ Name = 'bilinear / 640x480';   Preset = 'bilinear.slangp';         Size = '@Size(640 480)' }
 )
 
-$reg = 'HKCU:\Software\ShaderPlayer\ShaderPlayer-RA\shaders'
-$failed = 0
+$dataDir = Join-Path $env:ProgramData 'ShaderPlayer-RA'
+$ini     = Join-Path $dataDir 'settings.ini'
+$failed  = 0
 
 foreach ($c in $cases) {
     Get-Process ShaderPlayer -ErrorAction SilentlyContinue | Stop-Process -Force
-    Remove-Item 'HKCU:\Software\ShaderPlayer' -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -Path $reg -Force | Out-Null
-    if ($c.Preset) { Set-ItemProperty -Path $reg -Name 'lastPreset' -Value (Join-Path $shaders $c.Preset) }
-    if ($c.Size)   { Set-ItemProperty -Path $reg -Name 'sourceOverride' -Value $c.Size }
+    Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+
+    # Seed settings.ini the way QSettings would have written it. Forward slashes keep the
+    # INI writer from escaping the path.
+    $lines = @('[shaders]')
+    if ($c.Preset) { $lines += 'lastPreset=' + ((Join-Path $shaders $c.Preset) -replace '\\','/') }
+    if ($c.Size)   { $lines += 'sourceOverride=' + $c.Size }
+    Set-Content -Path $ini -Value $lines -Encoding UTF8
 
     $p = Start-Process -FilePath $exe -ArgumentList @("`"$video`"", '--selftest', "$Seconds") -PassThru
     $p.WaitForExit(60000) | Out-Null

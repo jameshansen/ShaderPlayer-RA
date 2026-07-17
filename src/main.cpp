@@ -51,7 +51,10 @@ int main(int argc, char **argv)
     try {
         MainWindow w;
         w.show();
-        w.openFiles(parser.positionalArguments());
+        if (parser.positionalArguments().isEmpty())
+            w.restorePlaylist();   // nothing asked for: pick up where we left off
+        else
+            w.openFiles(parser.positionalArguments());
 
         if (parser.isSet(selfTest)) {
             const int ms = int(parser.value(selfTest).toDouble() * 1000);
@@ -60,6 +63,9 @@ int main(int argc, char **argv)
                 const FrameStats out = w.video()->probeOutput();
                 qInfo("SELFTEST src: %s", qUtf8Printable(src.toString()));
                 qInfo("SELFTEST out: %s", qUtf8Printable(out.toString()));
+                qInfo("SELFTEST playlist: %lld entries", qlonglong(w.video()->playlist().size()));
+                qInfo("SELFTEST preset: %s",
+                      w.video()->preset().isEmpty() ? "<none>" : qUtf8Printable(w.video()->preset()));
                 if (!src.valid || !out.valid) {
                     qInfo("SELFTEST result: FAIL (nothing rendered)");
                     qApp->exit(3);

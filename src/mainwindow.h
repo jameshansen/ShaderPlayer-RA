@@ -4,6 +4,7 @@
 
 class VideoWidget;
 class ShaderPanel;
+class PlaylistPanel;
 class QAction;
 class QActionGroup;
 class QLabel;
@@ -19,6 +20,7 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
 
     void openFiles(const QStringList &files, bool append = false);
+    void restorePlaylist();
     VideoWidget *video() const { return m_video; }
 
 protected:
@@ -37,6 +39,7 @@ private:
 
     VideoWidget *m_video = nullptr;
     ShaderPanel *m_shaders = nullptr;
+    PlaylistPanel *m_playlist = nullptr;
 
     QMenu *m_subtitleMenu = nullptr;
     QActionGroup *m_sourceGroup = nullptr;

@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 
+#include "appdata.h"
+#include "playlistpanel.h"
 #include "shaderpanel.h"
 #include "videowidget.h"
 
@@ -22,6 +24,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QStyle>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QUrl>
 
@@ -62,9 +65,15 @@ MainWindow::MainWindow(QWidget *parent)
     setCentralWidget(m_video);
 
     m_shaders = new ShaderPanel(shaderRoot(), this);
-    auto *dock = new QDockWidget(tr("Shaders"), this);
+    m_playlist = new PlaylistPanel(m_video, this);
+
+    auto *tabs = new QTabWidget(this);
+    tabs->addTab(m_shaders, tr("Shaders"));
+    tabs->addTab(m_playlist, tr("Playlist"));
+
+    auto *dock = new QDockWidget(tr("Library"), this);
     dock->setObjectName(QStringLiteral("shaderDock"));
-    dock->setWidget(m_shaders);
+    dock->setWidget(tabs);
     addDockWidget(Qt::RightDockWidgetArea, dock);
 
     buildMenus();
@@ -257,7 +266,7 @@ void MainWindow::applySourceOverride(const QSize &size, bool persist)
     }
 
     if (persist)
-        QSettings().setValue(QStringLiteral("shaders/sourceOverride"), size);
+        settings()->setValue(QStringLiteral("shaders/sourceOverride"), size);
 }
 
 void MainWindow::promptCustomSourceSize()
@@ -293,7 +302,7 @@ void MainWindow::promptOpen(bool append)
 {
     const QStringList files = QFileDialog::getOpenFileNames(
         this, append ? tr("Add to Playlist") : tr("Open"),
-        QSettings().value(QStringLiteral("lastDir")).toString(), tr(kVideoFilter));
+        settings()->value(QStringLiteral("lastDir")).toString(), tr(kVideoFilter));
     if (!files.isEmpty())
         openFiles(files, append);
 }
@@ -302,22 +311,30 @@ void MainWindow::openFiles(const QStringList &files, bool append)
 {
     if (files.isEmpty())
         return;
-    QSettings().setValue(QStringLiteral("lastDir"), QFileInfo(files.first()).absolutePath());
+    // Only real paths have a directory; taking absolutePath() of "av://..." yields nonsense.
+    const QString first = files.first();
+    if (!first.contains(QStringLiteral("://")))
+        settings()->setValue(QStringLiteral("lastDir"), QFileInfo(first).absolutePath());
     m_video->open(files, append);
+}
+
+void MainWindow::restorePlaylist()
+{
+    m_playlist->restore();
 }
 
 void MainWindow::restoreSettings()
 {
-    QSettings s;
-    restoreGeometry(s.value(QStringLiteral("window/geometry")).toByteArray());
-    restoreState(s.value(QStringLiteral("window/state")).toByteArray());
+    QSettings *s = settings();
+    restoreGeometry(s->value(QStringLiteral("window/geometry")).toByteArray());
+    restoreState(s->value(QStringLiteral("window/state")).toByteArray());
 
-    m_volume->setValue(s.value(QStringLiteral("volume"), 100).toInt());
+    m_volume->setValue(s->value(QStringLiteral("volume"), 100).toInt());
 
-    const QSize override = s.value(QStringLiteral("shaders/sourceOverride")).toSize();
+    const QSize override = s->value(QStringLiteral("shaders/sourceOverride")).toSize();
     applySourceOverride(override, false);
 
-    const QString preset = s.value(QStringLiteral("shaders/lastPreset")).toString();
+    const QString preset = s->value(QStringLiteral("shaders/lastPreset")).toString();
     if (!preset.isEmpty() && QFileInfo::exists(preset)) {
         m_video->setPreset(preset);
         m_shaders->setCurrentPreset(preset);
@@ -326,11 +343,13 @@ void MainWindow::restoreSettings()
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
-    QSettings s;
-    s.setValue(QStringLiteral("window/geometry"), saveGeometry());
-    s.setValue(QStringLiteral("window/state"), saveState());
-    s.setValue(QStringLiteral("volume"), m_volume->value());
-    s.setValue(QStringLiteral("shaders/lastPreset"), m_video->preset());
+    QSettings *s = settings();
+    s->setValue(QStringLiteral("window/geometry"), saveGeometry());
+    s->setValue(QStringLiteral("window/state"), saveState());
+    s->setValue(QStringLiteral("volume"), m_volume->value());
+    s->setValue(QStringLiteral("shaders/lastPreset"), m_video->preset());
+    s->sync();
+    m_playlist->save();
     QMainWindow::closeEvent(e);
 }
 
