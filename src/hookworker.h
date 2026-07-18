@@ -26,7 +26,7 @@ public:
     ~HookWorker() override;
 
     // Safe to call from the GUI thread at any rate; only differences do any work.
-    void setState(const QString &preset, const QList<ShaderParam> &params, const QSize &source);
+    void setState(const QString &preset, const QList<ShaderParam> &params, int sourceLines);
 
     // True while a hooked game is actually being shaded. Drives the panel's live indicator.
     bool shading() const { return m_shading; }
@@ -40,7 +40,7 @@ private:
     QMutex m_lock;                  // guards the pending snapshot below
     QString m_preset;
     QList<ShaderParam> m_params;
-    QSize m_source;
+    int m_sourceLines = 0;
     bool m_dirty = true;
 
     volatile bool m_stop = false;

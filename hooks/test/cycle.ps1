@@ -37,9 +37,15 @@ Remove-Item $hooklog -ErrorAction SilentlyContinue
 # without anyone clicking through the UI first.
 $ini = "$env:ProgramData\ShaderPlayer-RA\settings.ini"
 if (Test-Path $ini) {
+    # Set the key, adding it if it is not there yet. A plain -replace silently does nothing when the
+    # key is absent, which is how a stale value survived a contract change once already.
+    function Set-Ini($text, $key, $value) {
+        if ($text -match "(?m)^$key=") { return $text -replace "(?m)^$key=.*$", "$key=$value" }
+        return $text.TrimEnd() + "`n$key=$value`n"
+    }
     $text = Get-Content $ini -Raw
-    $text = $text -replace '(?m)^lastPreset=.*$', ("lastPreset=" + ($preset -replace '\\', '/'))
-    $text = $text -replace '(?m)^sourceOverride=.*$', 'sourceOverride=@Size(424 240)'
+    $text = Set-Ini $text 'lastPreset' ($preset -replace '\\', '/')
+    $text = Set-Ini $text 'sourceLines' '240'   # Sonic Mania's native line count
     Set-Content $ini $text -Encoding utf8
 } else {
     Write-Host "no settings.ini yet; ShaderPlayer will start with whatever its defaults are"

@@ -158,6 +158,14 @@ QToolButton:pressed {
     border-top-color: #000000;
     border-bottom-color: #202020;
 }
+/* The active source resolution. Same green as the slider fill, so a lit button reads as the
+   selected mode rather than as a button mid-press. */
+QToolButton:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1f8f35, stop:1 #4aff6a);
+    border-top-color: #072d10;
+    border-bottom-color: #7dffa0;
+    color: #06240f;
+}
 
 /* Same recessed well as the buttons, so the sliders read as cut into the same panel.
    sub-page is the travelled part, which makes the groove light up as it fills. */
@@ -225,7 +233,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_hookWorker = new HookWorker(this);
     auto *hookSync = new QTimer(this);
     connect(hookSync, &QTimer::timeout, this, [this] {
-        m_hookWorker->setState(m_video->preset(), m_video->shaderParams(), m_video->sourceOverride());
+        m_hookWorker->setState(m_video->preset(), m_video->shaderParams(), m_video->sourceLines());
     });
     hookSync->start(200);
     m_hookWorker->start();
@@ -238,6 +246,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     buildMenus();
     buildTransport();
+    buildResolutionBar();
 
     connect(m_shaders, &ShaderPanel::presetChosen, m_video, &VideoWidget::setPreset);
     connect(m_video, &VideoWidget::shaderFailed, this, [this](const QString &msg) {
@@ -249,6 +258,8 @@ MainWindow::MainWindow(QWidget *parent)
     // First video to report a size snaps to the default scale; later files leave the window
     // where the user put it. Explicit scale-button clicks always apply, startup or not.
     connect(m_video, &VideoWidget::videoSizeChanged, this, [this](const QSize &s) {
+        // A new video can change the aspect, so what "480p" resolves to changes with it.
+        updateSourceLabel();
         if (!m_scaledOnce && !s.isEmpty()) {
             m_scaledOnce = true;
             scaleTo(m_scaleFactor);
@@ -303,34 +314,8 @@ void MainWindow::buildMenus()
     m_subtitleMenu = menuBar()->addMenu(tr("&Subtitles"));
     rebuildSubtitleMenu();
 
-    QMenu *shader = menuBar()->addMenu(tr("S&hader"));
-    QMenu *res = shader->addMenu(tr("&Source Resolution"));
-    m_sourceGroup = new QActionGroup(this);
-    m_sourceGroup->setExclusive(true);
-
-    // The whole point of the app: pin what resolution the shader chain sees, so a CRT mask
-    // looks identical no matter what the source happens to be.
-    struct Preset { const char *label; QSize size; };
-    static const Preset presets[] = {
-        { QT_TR_NOOP("Native (source size)"), QSize() },
-        { QT_TR_NOOP("256 x 224 (NES / SNES)"), QSize(256, 224) },
-        { QT_TR_NOOP("320 x 240 (240p)"), QSize(320, 240) },
-        { QT_TR_NOOP("640 x 480 (480p)"), QSize(640, 480) },
-        { QT_TR_NOOP("1280 x 720 (720p)"), QSize(1280, 720) },
-        { QT_TR_NOOP("1920 x 1080 (1080p)"), QSize(1920, 1080) },
-    };
-    for (const Preset &p : presets) {
-        QAction *a = res->addAction(tr(p.label));
-        a->setCheckable(true);
-        a->setData(p.size);
-        m_sourceGroup->addAction(a);
-        connect(a, &QAction::triggered, this, [this, p] { applySourceOverride(p.size); });
-    }
-    res->addSeparator();
-    m_customSourceAction = res->addAction(tr("&Custom..."));
-    m_customSourceAction->setCheckable(true);
-    m_sourceGroup->addAction(m_customSourceAction);
-    connect(m_customSourceAction, &QAction::triggered, this, &MainWindow::promptCustomSourceSize);
+    // Source Resolution used to be a submenu here. It is the control the whole app exists for, so
+    // it now gets its own always-visible strip of buttons instead (see buildResolutionBar).
 
     QMenu *help = menuBar()->addMenu(tr("&Help"));
     help->addAction(tr("&About"), this, [this] {
@@ -343,6 +328,67 @@ void MainWindow::buildMenus()
                "<a href='https://github.com/SnowflakePowered/librashader'>librashader</a>. "
                "Playback by <a href='https://mpv.io'>mpv</a>.</p>"));
     });
+}
+
+// The Source Resolution strip: what resolution the shader chain sees, which is the whole point of
+// the app, so it lives on screen rather than three levels into a menu.
+//
+// Line counts, not fixed sizes. A CRT mask cares about scanlines, and the width has to follow the
+// source's aspect or the picture gets squeezed: 480p is 854x480 on a 16:9 video and 640x480 on a
+// 4:3 one. The readout on the right shows what the current pick actually resolves to.
+void MainWindow::buildResolutionBar()
+{
+    auto *bar = new QWidget(this);
+    bar->setStyleSheet(QLatin1String(kTransportStyle));
+    auto *layout = new QHBoxLayout(bar);
+    layout->setContentsMargins(10, 7, 10, 7);
+    layout->setSpacing(8);
+
+    struct Choice { const char *label; int lines; const char *tip; };
+    static const Choice choices[] = {
+        { QT_TR_NOOP("Native"), 0,    QT_TR_NOOP("Shade at the source's own resolution") },
+        { "224p",               224,  QT_TR_NOOP("Shade at 224 lines (NES / SNES)") },
+        { "240p",               240,  QT_TR_NOOP("Shade at 240 lines (Genesis / arcade)") },
+        { "360p",               360,  QT_TR_NOOP("Shade at 360 lines") },
+        { "480p",               480,  QT_TR_NOOP("Shade at 480 lines (NTSC)") },
+        { "576p",               576,  QT_TR_NOOP("Shade at 576 lines (PAL)") },
+        { "720p",               720,  QT_TR_NOOP("Shade at 720 lines") },
+        { "1080p",              1080, QT_TR_NOOP("Shade at 1080 lines") },
+    };
+    for (const Choice &c : choices) {
+        auto *b = new QToolButton(bar);
+        b->setText(tr(c.label));
+        b->setFont(segmentFont(24));
+        b->setToolTip(tr(c.tip));
+        b->setCheckable(true);
+        b->setProperty("lines", c.lines);
+        auto *g = new QGraphicsDropShadowEffect(b);
+        g->setColor(kLed);
+        g->setOffset(0, 0);
+        g->setBlurRadius(14);
+        b->setGraphicsEffect(g);
+        connect(b, &QToolButton::clicked, this, [this, lines = c.lines] { applySourceLines(lines); });
+        layout->addWidget(b);
+        m_sourceButtons.append(b);
+    }
+
+    m_sourceLabel = new QLabel(bar);
+    m_sourceLabel->setFont(segmentFont(24));
+    auto *lg = new QGraphicsDropShadowEffect(m_sourceLabel);
+    lg->setColor(kLed);
+    lg->setOffset(0, 0);
+    lg->setBlurRadius(10);
+    m_sourceLabel->setGraphicsEffect(lg);
+    layout->addWidget(m_sourceLabel);
+
+    layout->addStretch(1);   // everything above stays left-justified
+
+    auto *dock = new QDockWidget(this);
+    dock->setObjectName(QStringLiteral("resolutionDock"));
+    dock->setTitleBarWidget(new QWidget(dock));   // no title bar; it is a control strip
+    dock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    dock->setWidget(bar);
+    addDockWidget(Qt::TopDockWidgetArea, dock);
 }
 
 void MainWindow::buildTransport()
@@ -532,61 +578,41 @@ void MainWindow::rebuildSubtitleMenu()
     }
 }
 
-void MainWindow::applySourceOverride(const QSize &size, bool persist)
+void MainWindow::applySourceLines(int lines, bool persist)
 {
-    m_video->setSourceOverride(size);
+    m_video->setSourceLines(lines);
 
-    // Keep the radio buttons honest, including when a custom size is restored at startup.
-    bool matched = false;
-    for (QAction *a : m_sourceGroup->actions()) {
-        if (a == m_customSourceAction)
-            continue;
-        if (a->data().toSize() == size) {
-            a->setChecked(true);
-            matched = true;
-        }
-    }
-    if (!matched && size.isValid()) {
-        m_customSourceAction->setChecked(true);
-        m_customSourceAction->setText(tr("&Custom (%1 x %2)...").arg(size.width()).arg(size.height()));
-    }
+    for (QToolButton *b : m_sourceButtons)
+        b->setChecked(b->property("lines").toInt() == lines);
+    updateSourceLabel();
 
     if (persist) {
-        settings()->setValue(QStringLiteral("shaders/sourceOverride"), size);
+        settings()->setValue(QStringLiteral("shaders/sourceLines"), lines);
+
+        // Pick a scale that gives a usable window. Anything up to 480 lines is a small picture and
+        // wants doubling to be watchable; 576p and above already fills enough of the screen that 2x
+        // would overflow most displays. Keyed on the effective height rather than the button, so
+        // Native follows the same rule from whatever the video actually is.
+        const int effective = m_video->sourceSize().height();
+        if (effective > 0)
+            m_scaleFactor = effective <= 480 ? 2 : 1;
+
         // The window is sized in multiples of the source, so a deliberate source change should
-        // re-snap to keep the current factor exact. Guarded on persist, so the startup restore
-        // (which lets the one-time videoSizeChanged snap handle it) doesn't fight geometry.
+        // re-snap. Guarded on persist, so the startup restore (which lets the one-time
+        // videoSizeChanged snap handle it) doesn't fight geometry.
         scaleTo(m_scaleFactor);
     }
 }
 
-void MainWindow::promptCustomSourceSize()
+// Spell out what the chosen line count actually works out to for the video that is loaded, since
+// that is the part a fixed "480p" label cannot tell you: the width is whatever the aspect gives.
+void MainWindow::updateSourceLabel()
 {
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("Custom Source Resolution"));
-
-    const QSize current = m_video->sourceOverride().isValid() ? m_video->sourceOverride()
-                                                              : m_video->sourceSize();
-    auto *w = new QSpinBox(&dlg);
-    w->setRange(16, 8192);
-    w->setValue(current.width() > 0 ? current.width() : 320);
-    auto *h = new QSpinBox(&dlg);
-    h->setRange(16, 8192);
-    h->setValue(current.height() > 0 ? current.height() : 240);
-
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-
-    auto *form = new QFormLayout(&dlg);
-    form->addRow(tr("Width:"), w);
-    form->addRow(tr("Height:"), h);
-    form->addWidget(buttons);
-
-    if (dlg.exec() == QDialog::Accepted)
-        applySourceOverride(QSize(w->value(), h->value()));
-    else
-        applySourceOverride(m_video->sourceOverride()); // resync the checkmarks
+    if (!m_sourceLabel)
+        return;
+    const QSize src = m_video->sourceSize();
+    m_sourceLabel->setText(src.isEmpty() ? QString()
+                                         : QStringLiteral("%1 x %2").arg(src.width()).arg(src.height()));
 }
 
 void MainWindow::promptOpen(bool append)
@@ -630,8 +656,12 @@ void MainWindow::restoreSettings()
 
     m_volume->setValue(s->value(QStringLiteral("volume"), 100).toInt());
 
-    const QSize override = s->value(QStringLiteral("shaders/sourceOverride")).toSize();
-    applySourceOverride(override, false);
+    // Carry over the old width-and-height setting by taking its height, so an existing install does
+    // not silently drop back to Native on first run of this version.
+    int lines = s->value(QStringLiteral("shaders/sourceLines"), -1).toInt();
+    if (lines < 0)
+        lines = s->value(QStringLiteral("shaders/sourceOverride")).toSize().height();
+    applySourceLines(std::max(0, lines), false);
 
     QString preset = s->value(QStringLiteral("shaders/lastPreset")).toString();
     // First run defaults to crt-royale, matching the favourite seeded in ShaderPanel. Guarded

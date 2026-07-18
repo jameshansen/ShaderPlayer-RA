@@ -39,12 +39,15 @@ struct Ctrl {
     uint32_t _pad;
     volatile uint64_t workerHeartbeat;  // GetTickCount64() stamped by the worker as it works
     volatile uint64_t workerSession;    // nonzero while a worker is attached (its pid)
-    // Capture resolution the worker wants, i.e. ShaderPlayer's Source Resolution control. The proxy
-    // downscales the backbuffer to this before handing the frame over, so a CRT mask sees the game's
-    // native pixels instead of its upscaled ones. 0 (or >= backbuffer) means capture full size.
-    // Appended at the end so an older worker binary reading the head of the struct still agrees.
-    volatile uint32_t srcWidth;
-    volatile uint32_t srcHeight;
+    // Capture height the worker wants, i.e. ShaderPlayer's Source Resolution control. The hook
+    // downscales the backbuffer to this many lines before handing the frame over, so a CRT mask sees
+    // the game's native pixels instead of its upscaled ones. 0 (or >= backbuffer) captures full size.
+    //
+    // Lines, not a width and height, so the hook can derive the width from the backbuffer it is
+    // actually looking at. That lands exactly on the game's native resolution where a fixed width
+    // would not: 240 lines of Sonic Mania's 1272x720 is 424 wide, which is precisely what it renders
+    // internally before upscaling.
+    volatile uint32_t srcLines;
     // The toggle. Set by ShaderPlayer's Hooks panel or by the in-game hotkey; read by the hook DLL
     // every Present. Injection is one-way and permanent, this is what turns shading on and off.
     volatile uint32_t enabled;

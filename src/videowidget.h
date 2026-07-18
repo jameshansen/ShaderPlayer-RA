@@ -71,10 +71,11 @@ public:
     // the chain outside what the preset declared.
     void setShaderParam(const QString &name, float value);
 
-    // The resolution the shader chain sees. An invalid size means the video's native size.
-    // This is the knob that keeps CRT mask geometry stable across sources.
-    void setSourceOverride(const QSize &size);
-    QSize sourceOverride() const { return m_forcedSource; }
+    // The resolution the shader chain sees, expressed as a line count because that is what a CRT
+    // mask actually cares about; the width follows the source's aspect ratio. 0 means the video's
+    // native size. This is the knob that keeps mask geometry stable across sources.
+    void setSourceLines(int lines);
+    int sourceLines() const { return m_forcedLines; }
     QSize sourceSize() const;
 
     // The video's actual display size, ignoring any source override. This is what the scale
@@ -144,7 +145,7 @@ private:
 
     QString m_presetPath;
     QList<ShaderParam> m_params;
-    QSize m_forcedSource;
+    int m_forcedLines = 0;   // 0 = native
 
     mpv_handle *m_mpv = nullptr;
     mpv_render_context *m_mpvGl = nullptr;

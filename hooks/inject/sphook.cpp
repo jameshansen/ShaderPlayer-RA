@@ -29,11 +29,14 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
+#include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 
 #include "../common/hookshared.h"
+#include "../../src/sourcelines.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -310,9 +313,14 @@ static HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9 *dev, const RECT *
         // lands exactly on the original pixel centres, so this recovers the native image rather than
         // resampling it -- and it shrinks the readback by the same factor.
         // ponytail: POINT only. A non-integer scale would alias; switch to LINEAR if that ever shows up.
+        //
+        // Width comes from the backbuffer's own aspect, by the same rule the video path uses.
+        // 240 lines of 1272x720 is 424, which is Sonic Mania's true internal size.
         UINT capW = g_bbW, capH = g_bbH;
-        if (g_ctrl->srcWidth && g_ctrl->srcHeight && g_ctrl->srcWidth < g_bbW && g_ctrl->srcHeight < g_bbH) {
-            capW = g_ctrl->srcWidth; capH = g_ctrl->srcHeight;
+        const uint32_t lines = g_ctrl->srcLines;
+        if (lines && lines < g_bbH) {
+            capW = UINT(widthForLines(int(g_bbW), int(g_bbH), int(lines)));
+            capH = lines;
         }
         if (capW != g_capW || capH != g_capH) {
             g_capSurf.Reset(); g_capRT.Reset();

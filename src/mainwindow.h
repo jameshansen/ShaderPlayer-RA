@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QList>
 #include <QMainWindow>
 
 class VideoWidget;
@@ -40,9 +41,10 @@ public slots:
 private:
     void buildMenus();
     void buildTransport();
+    void buildResolutionBar();
     void rebuildSubtitleMenu();
-    void applySourceOverride(const QSize &size, bool persist = true);
-    void promptCustomSourceSize();
+    void applySourceLines(int lines, bool persist = true);
+    void updateSourceLabel();
     void promptOpen(bool append);
     void restoreSettings();
 
@@ -54,8 +56,8 @@ private:
     HookWorker *m_hookWorker = nullptr;   // shades hooked games with the same preset as the video
 
     QMenu *m_subtitleMenu = nullptr;
-    QActionGroup *m_sourceGroup = nullptr;
-    QAction *m_customSourceAction = nullptr;
+    QList<QToolButton *> m_sourceButtons;   // one per line count; the checked one is active
+    QLabel *m_sourceLabel = nullptr;        // what the current pick resolves to for this video
     QAction *m_fullscreenAction = nullptr;
     QDockWidget *m_libraryDock = nullptr;
     QByteArray m_preFullscreenState;   // dock layout to put back on the way out

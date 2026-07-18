@@ -19,3 +19,16 @@ worker: shading gen 31753 frame 4200
 worker: shading gen 31753 frame 4500
 worker: shading gen 31753 frame 4800
 worker: shading gen 31753 frame 5100
+worker: opened textures gen 31754 (1272x720)
+worker: opened textures gen 31755 (1272x720)
+worker: shading gen 31755 frame 5400
+worker: opened textures gen 31756 (1272x720)
+worker: shading gen 31756 frame 5700
+worker: opened textures gen 31757 (1272x720)
+worker: shading gen 31757 frame 6000
+worker: shading gen 31757 frame 6300
+worker: opened textures gen 23181 (1272x720)
+worker: shading gen 23181 frame 6600
+worker: shading gen 23181 frame 6900
+worker: opened textures gen 3361 (1272x720)
+worker: shading gen 3361 frame 7200

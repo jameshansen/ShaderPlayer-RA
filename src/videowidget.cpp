@@ -1,5 +1,7 @@
 #include "videowidget.h"
 
+#include "sourcelines.h"
+
 #include <QApplication>
 #include <QFileInfo>
 #include <QMessageBox>
@@ -304,19 +306,22 @@ void VideoWidget::setPreset(const QString &path)
     update();
 }
 
-void VideoWidget::setSourceOverride(const QSize &size)
+void VideoWidget::setSourceLines(int lines)
 {
-    if (size == m_forcedSource)
+    if (lines == m_forcedLines)
         return;
-    m_forcedSource = size;
+    m_forcedLines = lines;
     update();
 }
 
+// A line count plus the source's own aspect, not a fixed width and height. Pinning 480p on a 16:9
+// video has to mean 854x480 and on a 4:3 video 640x480, otherwise the picture gets squeezed to fit
+// a shape it never had. The width rule itself lives in sourcelines.h, shared with the hook DLL.
 QSize VideoWidget::sourceSize() const
 {
-    if (m_forcedSource.isValid())
-        return m_forcedSource;
-    return videoSize();
+    const QSize full = videoSize();
+    const int w = widthForLines(full.width(), full.height(), m_forcedLines);
+    return w > 0 ? QSize(w, m_forcedLines) : full;
 }
 
 QSize VideoWidget::videoSize() const

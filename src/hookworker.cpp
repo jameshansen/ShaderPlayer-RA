@@ -33,10 +33,10 @@ void HookWorker::stop()
     wait(3000);
 }
 
-void HookWorker::setState(const QString &preset, const QList<ShaderParam> &params, const QSize &source)
+void HookWorker::setState(const QString &preset, const QList<ShaderParam> &params, int sourceLines)
 {
     QMutexLocker guard(&m_lock);
-    if (preset == m_preset && source == m_source && params.size() == m_params.size()) {
+    if (preset == m_preset && sourceLines == m_sourceLines && params.size() == m_params.size()) {
         bool same = true;
         for (int i = 0; same && i < params.size(); ++i)
             same = params[i].name == m_params[i].name && params[i].value == m_params[i].value;
@@ -44,7 +44,7 @@ void HookWorker::setState(const QString &preset, const QList<ShaderParam> &param
     }
     m_preset = preset;
     m_params = params;
-    m_source = source;
+    m_sourceLines = sourceLines;
     m_dirty = true;
 }
 
@@ -83,10 +83,10 @@ void HookWorker::run()
         // Pick up whatever the app is showing. Rebuilding the chain here, between frames, is the
         // only point where swapping it out cannot race a libra_..._frame call.
         if (m_dirty) {
-            QString preset; QList<ShaderParam> params; QSize source;
+            QString preset; QList<ShaderParam> params; int sourceLines;
             {
                 QMutexLocker guard(&m_lock);
-                preset = m_preset; params = m_params; source = m_source;
+                preset = m_preset; params = m_params; sourceLines = m_sourceLines;
                 m_dirty = false;
             }
             if (preset != builtFrom) {
@@ -110,8 +110,7 @@ void HookWorker::run()
                     if (e) libra_error_free(&e);   // preset without that param; nothing to do
                 }
             }
-            ctrl->srcWidth = source.isValid() ? uint32_t(source.width()) : 0u;
-            ctrl->srcHeight = source.isValid() ? uint32_t(source.height()) : 0u;
+            ctrl->srcLines = uint32_t(sourceLines > 0 ? sourceLines : 0);
         }
 
         // No shader selected means passthrough: stop the heartbeat and the proxy leaves the game alone.
@@ -158,7 +157,7 @@ void HookWorker::run()
 
     m_shading = false;
     ctrl->workerSession = 0;
-    ctrl->srcWidth = 0; ctrl->srcHeight = 0;            // do not leave a stale size for the next worker
+    ctrl->srcLines = 0;                                 // do not leave a stale size for the next worker
     if (chain) libra_d3d11_filter_chain_free(&chain);
     UnmapViewOfFile(ctrl);
     CloseHandle(map);
