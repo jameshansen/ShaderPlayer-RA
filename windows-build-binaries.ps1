@@ -16,4 +16,6 @@ if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" }
 & $cmake --build "$root/build" --config Release
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed ($LASTEXITCODE)" }
 
-Write-Host "Built: $root\build\Release\ShaderPlayer.exe"
+# The executable name is set in CMakeLists.txt as ShaderPlayer-RA
+$exeName = "ShaderPlayer-RA.exe"
+Write-Host "Built: $root\build\Release\$exeName"

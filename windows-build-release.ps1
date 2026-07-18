@@ -14,7 +14,9 @@ if (Test-Path $release) { Remove-Item $release -Recurse -Force }
 New-Item -ItemType Directory -Path $release | Out-Null
 
 # Mirror the deployed build output, minus the runtime log the app writes there.
-robocopy $build $release /MIR /XF shaderplayer.log *.log | Out-Null
+# The executable name is set in CMakeLists.txt as ShaderPlayer-RA
+$exeName = "ShaderPlayer-RA.exe"
+robocopy $build $release /MIR /XF shaderplayer.log *.log $exeName | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy (binaries) failed ($LASTEXITCODE)" }
 
 # Shaders load from .\shaders beside the exe (see shaderRoot() in mainwindow.cpp).

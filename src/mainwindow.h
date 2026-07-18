@@ -6,6 +6,8 @@ class VideoWidget;
 class ShaderPanel;
 class ShaderParamsPanel;
 class PlaylistPanel;
+class HooksPanel;
+class HookWorker;
 class QAction;
 class QActionGroup;
 class QDockWidget;
@@ -48,13 +50,14 @@ private:
     ShaderPanel *m_shaders = nullptr;
     ShaderParamsPanel *m_params = nullptr;
     PlaylistPanel *m_playlist = nullptr;
+    HooksPanel *m_hooks = nullptr;
+    HookWorker *m_hookWorker = nullptr;   // shades hooked games with the same preset as the video
 
     QMenu *m_subtitleMenu = nullptr;
     QActionGroup *m_sourceGroup = nullptr;
     QAction *m_customSourceAction = nullptr;
     QAction *m_fullscreenAction = nullptr;
     QDockWidget *m_libraryDock = nullptr;
-    QDockWidget *m_paramsDock = nullptr;
     QByteArray m_preFullscreenState;   // dock layout to put back on the way out
 
     QToolButton *m_playButton = nullptr;

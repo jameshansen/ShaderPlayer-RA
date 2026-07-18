@@ -5,6 +5,10 @@
 #include "shaderpanel.h"
 #include "shaderparamspanel.h"
 #include "videowidget.h"
+#ifdef SHADERPLAYER_HOOKS
+#include "hookspanel.h"
+#include "hookworker.h"
+#endif
 
 #include <QActionGroup>
 #include <QApplication>
@@ -29,6 +33,7 @@
 #include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QStyle>
 #include <QStyleOptionSlider>
 #include <QTabWidget>
@@ -195,22 +200,41 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_shaders = new ShaderPanel(shaderRoot(), this);
     m_playlist = new PlaylistPanel(m_video, this);
+    m_params = new ShaderParamsPanel(m_video, shaderRoot(), this);
 
+    // Picking a shader and tuning it are one job, so the settings sit under the list in the same
+    // tab rather than in a separate tool window. The splitter lets either half take the space.
+    auto *shaderTab = new QSplitter(Qt::Vertical, this);
+    shaderTab->addWidget(m_shaders);
+    shaderTab->addWidget(m_params);
+    shaderTab->setStretchFactor(0, 3);
+    shaderTab->setStretchFactor(1, 2);
+    shaderTab->setChildrenCollapsible(false);
+
+    // Everything lives in the Library dock: one place, three tabs.
     auto *tabs = new QTabWidget(this);
-    tabs->addTab(m_shaders, tr("Shaders"));
+    tabs->addTab(shaderTab, tr("Shaders"));
     tabs->addTab(m_playlist, tr("Playlist"));
+#ifdef SHADERPLAYER_HOOKS
+    m_hooks = new HooksPanel(this);
+    tabs->addTab(m_hooks, tr("Hooks"));
+
+    // Feed the hook worker whatever the video path is currently showing, so the shader in a hooked
+    // game follows the app. Polling covers every route a preset or slider can change without
+    // wiring a signal into each of them, and the worker only acts on differences.
+    m_hookWorker = new HookWorker(this);
+    auto *hookSync = new QTimer(this);
+    connect(hookSync, &QTimer::timeout, this, [this] {
+        m_hookWorker->setState(m_video->preset(), m_video->shaderParams(), m_video->sourceOverride());
+    });
+    hookSync->start(200);
+    m_hookWorker->start();
+#endif
 
     m_libraryDock = new QDockWidget(tr("Library"), this);
     m_libraryDock->setObjectName(QStringLiteral("shaderDock"));
     m_libraryDock->setWidget(tabs);
     addDockWidget(Qt::RightDockWidgetArea, m_libraryDock);
-
-    m_params = new ShaderParamsPanel(m_video, shaderRoot(), this);
-    m_paramsDock = new QDockWidget(tr("Shader Settings"), this);
-    m_paramsDock->setObjectName(QStringLiteral("paramsDock"));
-    m_paramsDock->setWidget(m_params);
-    addDockWidget(Qt::RightDockWidgetArea, m_paramsDock);
-    splitDockWidget(m_libraryDock, m_paramsDock, Qt::Vertical); // stacked under the library
 
     buildMenus();
     buildTransport();
@@ -262,9 +286,6 @@ void MainWindow::buildMenus()
     QAction *showLibrary = m_libraryDock->toggleViewAction();
     showLibrary->setText(tr("Show &Library"));
     view->addAction(showLibrary);
-    QAction *showParams = m_paramsDock->toggleViewAction();
-    showParams->setText(tr("Show Shader &Settings"));
-    view->addAction(showParams);
     view->addSeparator();
 
     m_fullscreenAction = view->addAction(tr("&Fullscreen"), Qt::Key_F11, this,
@@ -315,6 +336,7 @@ void MainWindow::buildMenus()
     help->addAction(tr("&About"), this, [this] {
         QMessageBox::about(this, tr("About ShaderPlayer-RA"),
             tr("<h3>ShaderPlayer-RA</h3>"
+               "<p>Version 0.0.1.0</p>"
                "<p>Video playback through RetroArch shaders.</p>"
                "<p>Shaders by the <a href='https://github.com/libretro/slang-shaders'>libretro</a> "
                "project, rendered with "
@@ -636,6 +658,9 @@ void MainWindow::closeEvent(QCloseEvent *e)
     s->setValue(QStringLiteral("shaders/lastPreset"), m_video->preset());
     s->sync();
     m_playlist->save();
+#ifdef SHADERPLAYER_HOOKS
+    m_hookWorker->stop();   // drops the heartbeat, so any hooked game returns to stock immediately
+#endif
     QMainWindow::closeEvent(e);
 }
 

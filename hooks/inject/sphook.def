@@ -1,0 +1,5 @@
+; SpHookProc is __stdcall (CALLBACK), so the 32-bit build decorates it to _SpHookProc@12 and
+; GetProcAddress("SpHookProc") comes back empty. Exporting through a .def gives both bitnesses the
+; same undecorated name.
+EXPORTS
+    SpHookProc
