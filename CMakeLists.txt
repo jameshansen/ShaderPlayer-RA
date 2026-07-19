@@ -78,7 +78,10 @@ add_custom_command(TARGET ${EXECUTABLE_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${EXTERN}/librashader/librashader.dll"
         "$<TARGET_FILE_DIR:${EXECUTABLE_NAME}>/librashader_capi.dll"
-    COMMAND "${CMAKE_PREFIX_PATH}/bin/windeployqt.exe" --no-translations --no-compiler-runtime
+    # --compiler-runtime stages MSVCP140/VCRUNTIME140 beside the exe. Without them the app will not
+    # start on a machine that has never had a Visual Studio redistributable installed, which is most
+    # machines that are not a developer's.
+    COMMAND "${CMAKE_PREFIX_PATH}/bin/windeployqt.exe" --no-translations --compiler-runtime
         "$<TARGET_FILE:${EXECUTABLE_NAME}>"
     VERBATIM
 )
