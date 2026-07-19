@@ -19,3 +19,11 @@ Thanks to:
 
 Alpha Release
 https://github.com/jameshansen/ShaderPlayer-RA/releases/latest
+
+**About**
+
+Ever since seeing the CRT-Royale shader in Retro Arch, I've always wanted to use it on old TV shows and movies, particularly those filmed on tape in the 90s. Something about standard definition content looks so much better on a TV.
+
+The problem - my C++ skills are not sharp enough, but in the era of AI-assisted development, I was able to create this "dream" app of mine, and even get it doing some amazing things like hook into running games, a typically very difficult task.
+
+So here it is, still in progress!
