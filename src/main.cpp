@@ -1,5 +1,9 @@
 ﻿#include "mainwindow.h"
 #include "videowidget.h"
+#ifdef SHADERPLAYER_HOOKS
+#include "hookspanel.h"
+#include "hookworker.h"
+#endif
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -14,6 +18,37 @@
 
 #include <windows.h>
 #include <dbghelp.h>
+#include <tlhelp32.h>
+
+#ifdef SHADERPLAYER_HOOKS
+// The newest running process with this image name. Newest because a test run launches its stand-in
+// game moments before asking, and a stale one left by a previous run would otherwise win.
+static quint32 pidNamed(const QString &exe)
+{
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return 0;
+    quint32 best = 0;
+    FILETIME bestStart{};
+    PROCESSENTRY32W pe{ sizeof(pe) };
+    for (BOOL more = Process32FirstW(snap, &pe); more; more = Process32NextW(snap, &pe)) {
+        if (QString::fromWCharArray(pe.szExeFile).compare(exe, Qt::CaseInsensitive) != 0)
+            continue;
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+        if (!h)
+            continue;
+        FILETIME start{}, dummy{};
+        if (GetProcessTimes(h, &start, &dummy, &dummy, &dummy) &&
+            CompareFileTime(&start, &bestStart) >= 0) {
+            bestStart = start;
+            best = pe.th32ProcessID;
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    return best;
+}
+#endif
 
 // Which module did we die in? An access violation inside libmpv means something very
 // different from one inside our own code, and the log alone cannot tell them apart.
@@ -106,6 +141,14 @@ int main(int argc, char **argv)
                        "4 = chain stalled while paused."),
         QStringLiteral("seconds"));
     parser.addOption(selfTest);
+    QCommandLineOption hookTest(
+        QStringList{ QStringLiteral("hooktest") },
+        QStringLiteral("Hook the running process named <exe>, wait for its frames to arrive, then "
+                       "report what came through and exit. 0 = frames arriving and animating, "
+                       "5 = no frames, 6 = frames but frozen, 7 = frames upside down, "
+                       "8 = no such process."),
+        QStringLiteral("exe"));
+    parser.addOption(hookTest);
     parser.process(app);
 
     try {
@@ -137,18 +180,14 @@ int main(int argc, char **argv)
                     return;
                 }
 
-                // Pausing must not stall the chain, or an animated preset freezes with the
-                // video. mpv stops handing over frames here, so this is really asking whether
-                // anything else is still driving paintGL.
-                // Only meaningful with a file still loaded: once the playlist ends mpv goes
-                // idle and paintGL correctly draws nothing, which is not a stall.
-                if (w.video()->sourceSize().isEmpty()) {
-                    qInfo("SELFTEST paused repaints: skipped (playback ended, nothing to shade)");
-                    qInfo("SELFTEST result: PASS");
-                    qApp->exit(0);
-                    return;
-                }
-
+                // Pausing must not stall the chain, or an animated preset freezes with the video.
+                // mpv stops handing over frames here, so this is really asking whether anything
+                // else is still driving paintGL.
+                //
+                // This used to be skipped once playback ended, back when an idle mpv meant paintGL
+                // correctly drew nothing. The chain now runs continuously and falls back to the
+                // no-signal screen, so there is no longer any state in which stalling is correct
+                // and the check always applies.
                 w.video()->setPaused(true);
                 const size_t before = w.video()->painted();
                 QTimer::singleShot(500, &w, [&w, before] {
@@ -195,6 +234,62 @@ int main(int argc, char **argv)
                 });
             });
         }
+#ifdef SHADERPLAYER_HOOKS
+        // Drive the Hooks panel the way a click does, then read the pipeline's own pixels rather
+        // than screenshotting the window. What this proves is the whole chain in one go: the DLL got
+        // into the process, a backend claimed it, frames crossed the shared texture, and they came
+        // out of the shader the right way up.
+        if (parser.isSet(hookTest)) {
+            const QString exe = parser.value(hookTest);
+            QTimer::singleShot(2500, &w, [&w, exe] {
+                const quint32 pid = pidNamed(exe);
+                qInfo("HOOKTEST target: %s pid %u", qUtf8Printable(exe), pid);
+                if (!pid) { qInfo("HOOKTEST result: FAIL (no such process)"); qApp->exit(8); return; }
+                w.hooks()->toggle(pid);
+
+                // Injection, the game's next present, the handoff and a repaint all have to happen
+                // before there is anything to look at.
+                QTimer::singleShot(7000, &w, [&w] {
+                    const FrameStats a = w.video()->probeSource();
+                    const FrameStats out = w.video()->probeOutput();
+                    qInfo("HOOKTEST hookActive: %d", int(w.video()->hookActive()));
+                    qInfo("HOOKTEST src: %s", qUtf8Printable(a.toString()));
+                    qInfo("HOOKTEST out: %s", qUtf8Printable(out.toString()));
+                    if (!w.video()->hookActive() || !a.valid || a.nonBlack < 0.05) {
+                        qInfo("HOOKTEST result: FAIL (no frames from the game)");
+                        qApp->exit(5);
+                        return;
+                    }
+                    // The test game's marker square is in its top-left eighth, and its field colour
+                    // cycles, so one sample answers orientation and two answer liveness.
+                    if (a.topLeftBias <= 0.0) {
+                        qInfo("HOOKTEST result: FAIL (frame is upside down)");
+                        qApp->exit(7);
+                        return;
+                    }
+                    const quint64 first = a.hash;
+                    const size_t paintedBefore = w.video()->painted();
+                    QTimer::singleShot(2000, &w, [&w, first, paintedBefore] {
+                        const FrameStats b = w.video()->probeSource();
+                        qInfo("HOOKTEST src again: %s", qUtf8Printable(b.toString()));
+                        // The two rates that localise a slow picture: what the worker collected from
+                        // the game, and what actually reached the screen. A gap between them is the
+                        // display's fault, and both being low is the capture's.
+                        qInfo("HOOKTEST capture: %.1f fps, painted: %.1f fps",
+                              w.hookWorker() ? w.hookWorker()->fps() : 0.0,
+                              double(w.video()->painted() - paintedBefore) / 2.0);
+                        if (b.hash == first) {
+                            qInfo("HOOKTEST result: FAIL (frames frozen)");
+                            qApp->exit(6);
+                            return;
+                        }
+                        qInfo("HOOKTEST result: PASS");
+                        qApp->exit(0);
+                    });
+                });
+            });
+        }
+#endif
         return app.exec();
     } catch (const std::exception &e) {
         QMessageBox::critical(nullptr, "ShaderPlayer-RA", e.what());

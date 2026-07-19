@@ -2,6 +2,7 @@
     <qresource prefix="/">
         <file>icons/application.ico</file>
         <file>icons/star.ico</file>
+        <file>icons/play.ico</file>
         <file>icons/arrows-fullscreen.svg</file>
         <file>font/lcddot_tr.ttf</file>
     </qresource>

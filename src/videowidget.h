@@ -2,6 +2,8 @@
 
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions_3_3_Core>
+#include <QElapsedTimer>
+#include <QImage>
 #include <QList>
 #include <QSize>
 #include <QString>
@@ -46,6 +48,12 @@ struct FrameStats {
     // interlacing swaps which lines are real vs interpolated and barely moves the average --
     // so comparing two frames needs the actual pixels.
     quint64 hash = 0;
+    // Mean luma of the picture's top-left eighth minus its bottom-left eighth. Only the hook test
+    // reads it, and only to answer one question: is the frame the right way up? A captured game
+    // frame passes through three conventions that each have an opinion about which row is first
+    // (OpenGL's readback, D3D's texture, the widget's blit), and a sign is the cheapest thing that
+    // notices when they disagree.
+    double topLeftBias = 0.0;
 
     QString toString() const;
 };
@@ -78,10 +86,28 @@ public:
     int sourceLines() const { return m_forcedLines; }
     QSize sourceSize() const;
 
+    // How often the chain is redrawn. The shader runs continuously, so this is its clock whether or
+    // not anything is playing. 24 / 50 / 60 are the ones the UI offers.
+    void setRefreshRate(int hz);
+    int refreshRate() const { return m_refreshHz; }
+
+    // False when nothing is loaded, i.e. the chain is being fed the no-signal screen.
+    bool hasSignal() const;
+
     // The video's actual display size, ignoring any source override. This is what the scale
     // buttons size the window against, so 2x means twice the real picture, not twice the
     // shader's working resolution.
     QSize videoSize() const;
+
+    // A frame captured from a hooked game, which takes over from mpv as the picture the chain is
+    // fed. Everything downstream is unchanged, which is the point: the game gets the preset, the
+    // parameters and the aspect-preserving letterbox the video already gets, so a game rendering at
+    // a resolution nothing like the window still lands on screen at the right shape.
+    //
+    // Frames stop arriving when the game exits or the user turns the hook off; the picture reverts
+    // to mpv (or the no-signal screen) on its own once they go stale.
+    void setHookFrame(const QImage &frame);
+    bool hookActive() const;
 
     void open(const QStringList &files, bool append = false);
     QList<SubtitleTrack> subtitleTracks() const;
@@ -147,6 +173,12 @@ private:
     QList<ShaderParam> m_params;
     int m_forcedLines = 0;   // 0 = native
 
+    // The hooked game's latest frame, and how long ago it arrived. Held rather than uploaded on
+    // arrival because the upload needs the GL context, which only paintGL is inside.
+    QImage m_hookFrame;
+    bool m_hookDirty = false;
+    QElapsedTimer m_hookAge;
+
     mpv_handle *m_mpv = nullptr;
     mpv_render_context *m_mpvGl = nullptr;
     libra_gl_filter_chain_t m_chain = nullptr;
@@ -156,9 +188,11 @@ private:
     GLuint m_outFbo = 0, m_outTex = 0;   // librashader renders here, we blit from it
     int m_srcW = 0, m_srcH = 0, m_outW = 0, m_outH = 0;
 
-    // While paused mpv stops handing us frames, so nothing would drive the chain and an
-    // animated preset would freeze. This keeps repainting the held frame through it.
+    // Drives the chain continuously: mpv only hands us frames while playing, so without this an
+    // animated preset would freeze whenever playback did, and show nothing at all with no file
+    // loaded. Runs for the life of the widget.
     QTimer m_paintTimer;
+    int m_refreshHz = 60;
 
     size_t m_frame = 0;
     size_t m_painted = 0;                // frames actually blitted; 0 means nothing ever drew

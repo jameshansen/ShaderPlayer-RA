@@ -54,7 +54,8 @@ if(SHADERPLAYER_HOOKS)
         # Dev fallback for the hook DLLs + injection helper; installed builds use the exe's own folder.
         SHADERPLAYER_HOOK_DIR="${CMAKE_SOURCE_DIR}/hooks/inject/bin"
     )
-    target_link_libraries(${EXECUTABLE_NAME} PRIVATE d3d11 dxgi)
+    # winmm: timeBeginPeriod, so the capture loop's polling is not rounded up to a 60Hz-ish tick.
+    target_link_libraries(${EXECUTABLE_NAME} PRIVATE d3d11 dxgi winmm)
 endif()
 
 target_link_libraries(${EXECUTABLE_NAME} PRIVATE

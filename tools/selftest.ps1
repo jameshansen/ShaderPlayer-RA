@@ -14,14 +14,17 @@ if (-not (Test-Path $exe)) { throw "not built: $exe" }
 $video = 'av://lavfi:testsrc2=size=320x240:rate=60'
 
 $cases = @(
-    @{ Name = 'passthrough / native'; Preset = '';                        Size = '' }
-    @{ Name = 'bilinear / native';    Preset = 'bilinear.slangp';         Size = '' }
-    @{ Name = 'crt-royale / native';  Preset = 'crt\crt-royale.slangp';   Size = '' }
-    @{ Name = 'crt-geom / native';    Preset = 'crt\crt-geom.slangp';     Size = '' }
-    @{ Name = 'crt-royale / 256x224'; Preset = 'crt\crt-royale.slangp';   Size = '@Size(256 224)' }
-    @{ Name = 'crt-royale / 320x240'; Preset = 'crt\crt-royale.slangp';   Size = '@Size(320 240)' }
-    @{ Name = 'crt-royale / 640x480'; Preset = 'crt\crt-royale.slangp';   Size = '@Size(640 480)' }
-    @{ Name = 'bilinear / 640x480';   Preset = 'bilinear.slangp';         Size = '@Size(640 480)' }
+    @{ Name = 'passthrough / native'; Preset = '';                        Lines = '' }
+    @{ Name = 'bilinear / native';    Preset = 'bilinear.slangp';         Lines = '' }
+    @{ Name = 'crt-royale / native';  Preset = 'crt\crt-royale.slangp';   Lines = '' }
+    @{ Name = 'crt-geom / native';    Preset = 'crt\crt-geom.slangp';     Lines = '' }
+    @{ Name = 'crt-royale / 224p';    Preset = 'crt\crt-royale.slangp';   Lines = '224' }
+    @{ Name = 'crt-royale / 240p';    Preset = 'crt\crt-royale.slangp';   Lines = '240' }
+    @{ Name = 'crt-royale / 480p';    Preset = 'crt\crt-royale.slangp';   Lines = '480' }
+    @{ Name = 'bilinear / 480p';      Preset = 'bilinear.slangp';         Lines = '480' }
+    # No file at all: the chain still has to run and shade the no-signal screen, so this case
+    # fails if "always running" ever regresses to "only while mpv is producing frames".
+    @{ Name = 'no signal / royale';   Preset = 'crt\crt-royale.slangp';   Lines = '';    NoVideo = $true }
 )
 
 $dataDir = Join-Path $env:ProgramData 'ShaderPlayer-RA'
@@ -37,10 +40,12 @@ foreach ($c in $cases) {
     # INI writer from escaping the path.
     $lines = @('[shaders]')
     if ($c.Preset) { $lines += 'lastPreset=' + ((Join-Path $shaders $c.Preset) -replace '\\','/') }
-    if ($c.Size)   { $lines += 'sourceOverride=' + $c.Size }
+    if ($c.Lines)  { $lines += 'sourceLines=' + $c.Lines }
     Set-Content -Path $ini -Value $lines -Encoding UTF8
 
-    $p = Start-Process -FilePath $exe -ArgumentList @("`"$video`"", '--selftest', "$Seconds") -PassThru
+    $argv = @('--selftest', "$Seconds")
+    if (-not $c.NoVideo) { $argv = @("`"$video`"") + $argv }
+    $p = Start-Process -FilePath $exe -ArgumentList $argv -PassThru
     $p.WaitForExit(60000) | Out-Null
     if (-not $p.HasExited) { $p.Kill(); Write-Host "TIMEOUT  $($c.Name)"; $failed++; continue }
 

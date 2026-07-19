@@ -109,9 +109,16 @@ VideoWidget::VideoWidget(QWidget *parent)
     // MPV_FORMAT_NONE fires on any playlist change, including a reorder that leaves the count alone.
     mpv_observe_property(m_mpv, 0, "playlist", MPV_FORMAT_NONE);
 
-    // ponytail: fixed 60Hz rather than chasing the real refresh rate. Only runs while paused.
-    m_paintTimer.setInterval(16);
+    // The chain runs continuously, not only when mpv hands us a frame. An animated preset has to
+    // keep animating while paused, between files, and when nothing is loaded at all, so this clock
+    // is the thing that drives painting and mpv's update callback is only an extra nudge.
+    //
+    // ponytail: a plain QTimer, so the interval is whole milliseconds and 24Hz is really 41.67 ms
+    // rounded to 42. That is a repaint cadence for a shader, not a presentation clock -- mpv still
+    // does its own A/V timing -- so the drift does not go anywhere that matters.
+    setRefreshRate(m_refreshHz);
     connect(&m_paintTimer, &QTimer::timeout, this, qOverload<>(&QWidget::update));
+    m_paintTimer.start();
 
     mpv_request_log_messages(m_mpv, "info");
     mpv_set_wakeup_callback(m_mpv, [](void *ctx) {
@@ -317,15 +324,78 @@ void VideoWidget::setSourceLines(int lines)
 // A line count plus the source's own aspect, not a fixed width and height. Pinning 480p on a 16:9
 // video has to mean 854x480 and on a 4:3 video 640x480, otherwise the picture gets squeezed to fit
 // a shape it never had. The width rule itself lives in sourcelines.h, shared with the hook DLL.
+void VideoWidget::setRefreshRate(int hz)
+{
+    if (hz <= 0)
+        return;
+    m_refreshHz = hz;
+    m_paintTimer.setInterval(qRound(1000.0 / hz));
+}
+
+// A hooked game counts as live for one second past its last frame. Long enough that a game stalling
+// on a loading screen does not flick back to the video, short enough that closing one is immediate.
+static constexpr qint64 HOOK_FRAME_STALE_MS = 1000;
+
+void VideoWidget::setHookFrame(const QImage &frame)
+{
+    if (frame.isNull())
+        return;
+    // Flip on the way in. The hook hands over a top-down image, which is what D3D wants and what the
+    // write-back path needs, but a GL texture's first row is the bottom of the picture -- and the
+    // rest of this class is built on mpv's frames, which arrive already flipped for exactly that
+    // reason (see the FLIP_Y param in paintGL). Uploading a top-down frame straight in puts the
+    // game on screen upside down.
+    //
+    // ponytail: a whole-image mirror per frame, which is a memcpy of a source-resolution frame, not
+    // a backbuffer. Flipping the blit instead would mean giving the mpv path its own case, and the
+    // one place that would save work is the one place the cost is already negligible.
+    m_hookFrame = frame.mirrored(false, true);
+    m_hookDirty = true;
+    m_hookAge.restart();
+
+    // Repaint when the game gives us a frame, rather than leaving it to the paint timer. The timer
+    // runs free of the game's clock, so at similar rates the two drift against each other and the
+    // picture shows some frames twice and drops others -- which looks like a much worse frame rate
+    // than it is. Qt coalesces these to one repaint per vsync, so a game presenting faster than the
+    // display cannot make us paint faster than the display.
+    update();
+}
+
+bool VideoWidget::hookActive() const
+{
+    return !m_hookFrame.isNull() && m_hookAge.isValid() && m_hookAge.elapsed() < HOOK_FRAME_STALE_MS;
+}
+
+bool VideoWidget::hasSignal() const
+{
+    return hookActive() || !videoSize().isEmpty();
+}
+
 QSize VideoWidget::sourceSize() const
 {
+    // The hook already captured at the requested line count, using the game's own backbuffer aspect
+    // to pick the width. Re-deriving a size here would only round it a second time.
+    if (hookActive())
+        return m_hookFrame.size();
+
     const QSize full = videoSize();
     const int w = widthForLines(full.width(), full.height(), m_forcedLines);
-    return w > 0 ? QSize(w, m_forcedLines) : full;
+    if (w > 0)
+        return QSize(w, m_forcedLines);
+    if (!full.isEmpty())
+        return full;
+
+    // No signal. The blue screen still goes through the chain, so it needs a shape like any other
+    // frame. 4:3 at the chosen line count, because a no-tape screen is a 4:3 idea; Native with
+    // nothing loaded has no resolution to be native to, so it falls back to 480 lines.
+    const int lines = m_forcedLines > 0 ? m_forcedLines : 480;
+    return QSize(widthForLines(4, 3, lines), lines);
 }
 
 QSize VideoWidget::videoSize() const
 {
+    if (hookActive())
+        return m_hookFrame.size();   // so the 1x/2x/3x buttons size the window against the game
     int64_t w = 0, h = 0;
     mpv_get_property(m_mpv, "dwidth", MPV_FORMAT_INT64, &w);
     mpv_get_property(m_mpv, "dheight", MPV_FORMAT_INT64, &h);
@@ -492,12 +562,9 @@ void VideoWidget::pumpMpvEvents()
             else if (name == QLatin1String("duration"))
                 emit durationChanged(*static_cast<double *>(p->data));
             else if (name == QLatin1String("pause")) {
-                const bool paused = *static_cast<int *>(p->data) != 0;
-                if (paused)
-                    m_paintTimer.start();
-                else
-                    m_paintTimer.stop(); // mpv's update callback takes over again
-                emit pausedChanged(paused);
+                // Nothing to start or stop: the paint clock runs regardless of playback state,
+                // which is what keeps an animated shader alive over a held frame.
+                emit pausedChanged(*static_cast<int *>(p->data) != 0);
             }
             else if (name == QLatin1String("media-title"))
                 emit titleChanged(QString::fromUtf8(*static_cast<char **>(p->data)));
@@ -528,8 +595,8 @@ QString FrameStats::toString() const
 {
     if (!valid)
         return QStringLiteral("<no frame>");
-    return QString::asprintf("%dx%d nonblack=%.3f mean=(%d,%d,%d)",
-                             width, height, nonBlack, meanR, meanG, meanB);
+    return QString::asprintf("%dx%d nonblack=%.3f mean=(%d,%d,%d) topleftbias=%+.1f",
+                             width, height, nonBlack, meanR, meanG, meanB, topLeftBias);
 }
 
 FrameStats VideoWidget::probe(GLuint fbo, int w, int h)
@@ -564,6 +631,19 @@ FrameStats VideoWidget::probe(GLuint fbo, int w, int h)
     st.nonBlack = double(lit) / double(n);
     st.meanR = int(sumR / n); st.meanG = int(sumG / n); st.meanB = int(sumB / n);
     st.hash = hash;
+
+    // glReadPixels hands back rows bottom-up, so the picture's top rows are the last ones here.
+    const int bw = std::max(1, w / 8), bh = std::max(1, h / 8);
+    auto cornerLuma = [&](int y0) {
+        quint64 sum = 0;
+        for (int y = y0; y < y0 + bh; ++y)
+            for (int x = 0; x < bw; ++x) {
+                const unsigned char *p = &px[(size_t(y) * w + x) * 4];
+                sum += quint64(p[0]) + p[1] + p[2];
+            }
+        return double(sum) / (double(bw) * bh * 3.0);
+    };
+    st.topLeftBias = cornerLuma(h - bh) - cornerLuma(0);
     return st;
 }
 
@@ -620,6 +700,11 @@ void VideoWidget::resizeTargets(int srcW, int srcH, int outW, int outH)
 
     m_srcW = srcW; m_srcH = srcH;
     m_outW = outW; m_outH = outH;
+
+    // The source texture was just recreated with undefined contents. mpv redraws into it every
+    // frame regardless, but a hooked game's frame is only uploaded when it changes, so without
+    // this the first frame after a resize would be whatever the driver left there.
+    m_hookDirty = true;
 }
 
 void VideoWidget::paintGL()
@@ -631,7 +716,6 @@ void VideoWidget::paintGL()
     const qreal dpr = devicePixelRatioF();
     const int outW = int(width() * dpr), outH = int(height() * dpr);
 
-    // Nothing loaded (or mpv is idle): just show black.
     if (src.isEmpty() || outW <= 0 || outH <= 0) {
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -643,16 +727,44 @@ void VideoWidget::paintGL()
     const QRect dst = fitRect(src, outW, outH);
     resizeTargets(src.width(), src.height(), dst.width(), dst.height());
 
-    // 1. mpv decodes and renders the frame (including subtitles) into m_srcFbo.
-    mpv_opengl_fbo fbo{ int(m_srcFbo), src.width(), src.height(), GL_RGBA8 };
-    // mpv's FBO origin convention comes out inverted relative to how we blit into the widget.
-    int flip = 1;
-    mpv_render_param params[] = {
-        { MPV_RENDER_PARAM_OPENGL_FBO, &fbo },
-        { MPV_RENDER_PARAM_FLIP_Y, &flip },
-        { MPV_RENDER_PARAM_INVALID, nullptr }
-    };
-    mpv_render_context_render(m_mpvGl, params);
+    // 1. Fill m_srcFbo with this frame's picture: a hooked game's frame, mpv's decoded frame, or
+    // the no-signal screen.
+    if (hookActive()) {
+        // Straight into the source texture the chain reads. The sizes agree by construction --
+        // sourceSize() returns this very frame's size -- but a frame that arrived between the
+        // resize and here would not, so check rather than write past the texture.
+        if (m_hookDirty && m_hookFrame.size() == src) {
+            m_hookDirty = false;
+            glBindTexture(GL_TEXTURE_2D, m_srcTex);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, int(m_hookFrame.bytesPerLine() / 4));
+            // Format_RGB32 is BGRA in memory on a little-endian machine, which is exactly what the
+            // hook captured, so this is a straight upload with no conversion pass.
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, src.width(), src.height(),
+                            GL_BGRA, GL_UNSIGNED_BYTE, m_hookFrame.constBits());
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+    } else if (hasSignal()) {
+        mpv_opengl_fbo fbo{ int(m_srcFbo), src.width(), src.height(), GL_RGBA8 };
+        // mpv's FBO origin convention comes out inverted relative to how we blit into the widget.
+        int flip = 1;
+        mpv_render_param params[] = {
+            { MPV_RENDER_PARAM_OPENGL_FBO, &fbo },
+            { MPV_RENDER_PARAM_FLIP_Y, &flip },
+            { MPV_RENDER_PARAM_INVALID, nullptr }
+        };
+        mpv_render_context_render(m_mpvGl, params);
+    } else {
+        // The blue a VCR shows with no tape in it. Drawn into the same FBO mpv would have written,
+        // so the chain treats it as an ordinary frame: the shader stays lit with nothing playing,
+        // which is the point of running it continuously.
+        glBindFramebuffer(GL_FRAMEBUFFER, m_srcFbo);
+        glViewport(0, 0, src.width(), src.height());
+        glDisable(GL_SCISSOR_TEST);
+        glClearColor(0.04f, 0.05f, 0.55f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+    }
 
     // 2. librashader runs the preset from m_srcTex into m_outTex.
     GLuint readFbo = m_srcFbo;

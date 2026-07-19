@@ -65,6 +65,10 @@ const char *kVideoFilter =
     "Video files (*.mp4 *.mkv *.avi *.mov *.webm *.m4v *.wmv *.flv *.ts *.mpg *.mpeg);;All files (*)";
 
 const QColor kLed(0x4a, 0xff, 0x6a);
+// Active state. Every control that has an on/off or a current-mode reading lights cyan when it is
+// the live one: the play button while playing, the current scale, the current line count, the
+// current refresh rate. Green is idle, cyan is "this is what you are getting".
+const QColor kLedActive(0x4a, 0xe8, 0xff);
 
 // Left-click jumps the handle to the click point, then hands off to the normal drag machinery.
 // The SH_Slider_AbsoluteSetButtons style hint would do this in one line, but QStyleSheetStyle
@@ -96,11 +100,11 @@ protected:
 
 // FNV-nothing: just tint a glyph LED green. SourceIn keeps the glyph's alpha and paints every
 // lit pixel green, which is how a monochrome icon becomes an LED without per-icon artwork.
-QIcon tintLed(QPixmap pm)
+QIcon tintLed(QPixmap pm, const QColor &c = kLed)
 {
     QPainter p(&pm);
     p.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    p.fillRect(pm.rect(), kLed);
+    p.fillRect(pm.rect(), c);
     p.end();
     return QIcon(pm);
 }
@@ -125,9 +129,9 @@ QFont segmentFont(int px) { return bundledFont(QStringLiteral(":/font/lcddot_tr.
 
 // Recolour a stock icon to LED green. A stylesheet cannot reach inside a QIcon, so tint the
 // pixmap: SourceIn keeps the glyph's alpha and replaces every colour under it.
-QIcon ledIcon(QStyle *style, QStyle::StandardPixmap sp, int size = 22)
+QIcon ledIcon(QStyle *style, QStyle::StandardPixmap sp, int size = 22, const QColor &c = kLed)
 {
-    return tintLed(style->standardIcon(sp).pixmap(size, size));
+    return tintLed(style->standardIcon(sp).pixmap(size, size), c);
 }
 
 // Same treatment for a bundled SVG. QIcon renders it through the svg icon plugin; currentColor
@@ -135,6 +139,31 @@ QIcon ledIcon(QStyle *style, QStyle::StandardPixmap sp, int size = 22)
 QIcon ledSvg(const QString &path, int size = 22)
 {
     return tintLed(QIcon(path).pixmap(size, size));
+}
+
+// Swap a control's halo between idle green and active cyan. The glow is a QGraphicsDropShadowEffect
+// rather than anything a stylesheet can reach, so :checked cannot do this part on its own.
+void setGlowActive(QWidget *w, bool active)
+{
+    if (auto *g = qobject_cast<QGraphicsDropShadowEffect *>(w->graphicsEffect()))
+        g->setColor(active ? kLedActive : kLed);
+}
+
+// Give a widget its halo. Offset 0 turns a drop shadow into a glow -- the cheapest honest one going.
+QGraphicsDropShadowEffect *addGlow(QWidget *w, int blur)
+{
+    auto *g = new QGraphicsDropShadowEffect(w);
+    g->setColor(kLed);
+    g->setOffset(0, 0);
+    g->setBlurRadius(blur);
+    w->setGraphicsEffect(g);
+    return g;
+}
+
+// A checkable control whose halo tracks its own checked state.
+void glowOnCheck(QAbstractButton *b)
+{
+    QObject::connect(b, &QAbstractButton::toggled, b, [b](bool on) { setGlowActive(b, on); });
 }
 
 // Recessed well: the gradient runs dark-at-top to lighter-at-bottom and the bevel is dark on
@@ -158,13 +187,11 @@ QToolButton:pressed {
     border-top-color: #000000;
     border-bottom-color: #202020;
 }
-/* The active source resolution. Same green as the slider fill, so a lit button reads as the
-   selected mode rather than as a button mid-press. */
+/* The active mode: current resolution, refresh rate or scale. Only the text changes colour, and
+   the halo goes cyan with it, so a lit button reads as a lit LED rather than a filled-in block.
+   The well it sits in stays exactly as it is. */
 QToolButton:checked {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1f8f35, stop:1 #4aff6a);
-    border-top-color: #072d10;
-    border-bottom-color: #7dffa0;
-    color: #06240f;
+    color: #4ae8ff;
 }
 
 /* Same recessed well as the buttons, so the sliders read as cut into the same panel.
@@ -236,6 +263,18 @@ MainWindow::MainWindow(QWidget *parent)
         m_hookWorker->setState(m_video->preset(), m_video->shaderParams(), m_video->sourceLines());
     });
     hookSync->start(200);
+
+    // The game's picture arrives here and goes in as the video surface's source, so it comes out
+    // the far end of the same shader chain, at the same scale, in the same window.
+    connect(m_hookWorker, &HookWorker::frameReady, this, [this](const QImage &frame) {
+        const bool wasPlaying = m_video->hookActive();
+        m_video->setHookFrame(frame);
+        // A game has taken the screen; nothing is watching the video behind it, and leaving it
+        // playing means its audio carries on over the game's.
+        if (!wasPlaying)
+            m_video->setPaused(true);
+    });
+    m_hooks->attachWorker(m_hookWorker);
     m_hookWorker->start();
 #endif
 
@@ -266,10 +305,9 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
     connect(m_video, &VideoWidget::tracksChanged, this, &MainWindow::rebuildSubtitleMenu);
-    connect(m_video, &VideoWidget::titleChanged, this, [this](const QString &t) {
-        setWindowTitle(t.isEmpty() ? QStringLiteral("ShaderPlayer-RA")
-                                   : QStringLiteral("%1 - ShaderPlayer-RA").arg(t));
-    });
+    // The title bar stays "ShaderPlayer-RA". It used to follow whatever mpv was playing, which
+    // changes on its own as a playlist advances and reads as a distraction rather than information;
+    // the playlist panel is where you look to find out what is playing.
 
     restoreSettings();
 }
@@ -362,11 +400,8 @@ void MainWindow::buildResolutionBar()
         b->setToolTip(tr(c.tip));
         b->setCheckable(true);
         b->setProperty("lines", c.lines);
-        auto *g = new QGraphicsDropShadowEffect(b);
-        g->setColor(kLed);
-        g->setOffset(0, 0);
-        g->setBlurRadius(14);
-        b->setGraphicsEffect(g);
+        addGlow(b, 14);
+        glowOnCheck(b);
         connect(b, &QToolButton::clicked, this, [this, lines = c.lines] { applySourceLines(lines); });
         layout->addWidget(b);
         m_sourceButtons.append(b);
@@ -374,12 +409,29 @@ void MainWindow::buildResolutionBar()
 
     m_sourceLabel = new QLabel(bar);
     m_sourceLabel->setFont(segmentFont(24));
-    auto *lg = new QGraphicsDropShadowEffect(m_sourceLabel);
-    lg->setColor(kLed);
-    lg->setOffset(0, 0);
-    lg->setBlurRadius(10);
-    m_sourceLabel->setGraphicsEffect(lg);
+    addGlow(m_sourceLabel, 10);
     layout->addWidget(m_sourceLabel);
+
+    // Refresh rate: how fast the chain is redrawn, which matters because the shader now runs all
+    // the time rather than only when mpv produces a frame.
+    auto *sep = new QLabel(QStringLiteral("|"), bar);
+    sep->setFont(segmentFont(24));
+    addGlow(sep, 8);
+    layout->addWidget(sep);
+
+    for (int hz : { 24, 50, 60 }) {
+        auto *b = new QToolButton(bar);
+        b->setText(QStringLiteral("%1Hz").arg(hz));
+        b->setFont(segmentFont(24));
+        b->setToolTip(tr("Run the shader at %1 Hz").arg(hz));
+        b->setCheckable(true);
+        b->setProperty("hz", hz);
+        addGlow(b, 14);
+        glowOnCheck(b);
+        connect(b, &QToolButton::clicked, this, [this, hz] { applyRefreshRate(hz); });
+        layout->addWidget(b);
+        m_refreshButtons.append(b);
+    }
 
     layout->addStretch(1);   // everything above stays left-justified
 
@@ -405,14 +457,7 @@ void MainWindow::buildTransport()
         b->setIcon(ledIcon(style(), icon));
         b->setToolTip(tip);
         b->setAutoRaise(false); // the stylesheet supplies the look
-
-        // Offset 0 turns a drop shadow into a halo -- the cheapest honest glow going.
-        auto *glow = new QGraphicsDropShadowEffect(b);
-        glow->setColor(kLed);
-        glow->setOffset(0, 0);
-        glow->setBlurRadius(14);
-        b->setGraphicsEffect(glow);
-
+        addGlow(b, 14);
         connect(b, &QToolButton::clicked, m_video, slot);
         layout->addWidget(b);
         return b;
@@ -426,24 +471,16 @@ void MainWindow::buildTransport()
     m_seek->setRange(0, 0);
     layout->addWidget(m_seek, 1);
 
-    auto glowGreen = [](QWidget *w, int blur) {
-        auto *g = new QGraphicsDropShadowEffect(w);
-        g->setColor(kLed);
-        g->setOffset(0, 0);
-        g->setBlurRadius(blur);
-        w->setGraphicsEffect(g);
-    };
-
     m_timeLabel = new QLabel(QStringLiteral("0:00 / 0:00"), bar);
     m_timeLabel->setFont(segmentFont(24));
-    glowGreen(m_timeLabel, 10);
+    addGlow(m_timeLabel, 10);
     layout->addWidget(m_timeLabel);
 
     auto *volIcon = new QLabel(bar);
     volIcon->setPixmap(ledIcon(style(), QStyle::SP_MediaVolume, 16).pixmap(16, 16));
     // A label has no background of its own, so here the halo hugs the glyph rather than a
     // rounded rect -- the speaker actually bleeds light.
-    glowGreen(volIcon, 10);
+    addGlow(volIcon, 10);
     layout->addWidget(volIcon);
 
     m_volume = new QSlider(Qt::Horizontal, bar);
@@ -458,15 +495,20 @@ void MainWindow::buildTransport()
         b->setText(QStringLiteral("%1x").arg(factor));
         b->setFont(segmentFont(24));
         b->setToolTip(tr("Scale video to %1x").arg(factor));
-        glowGreen(b, 14);
+        b->setCheckable(true);
+        b->setProperty("factor", factor);
+        addGlow(b, 14);
+        glowOnCheck(b);
+        b->setChecked(factor == m_scaleFactor);   // lit before the first scaleTo ever runs
         connect(b, &QToolButton::clicked, this, [this, factor] { scaleTo(factor); });
         layout->addWidget(b);
+        m_scaleButtons.append(b);
     }
 
     auto *fs = new QToolButton(bar);
     fs->setIcon(ledSvg(QStringLiteral(":/icons/arrows-fullscreen.svg"), 18));
     fs->setToolTip(tr("Fullscreen"));
-    glowGreen(fs, 14);
+    addGlow(fs, 14);
     connect(fs, &QToolButton::clicked, this, &MainWindow::toggleFullscreen);
     layout->addWidget(fs);
 
@@ -498,15 +540,19 @@ void MainWindow::buildTransport()
             m_seek->setValue(int(p * 1000));
         m_timeLabel->setText(formatTime(p) + QStringLiteral(" / ") + formatTime(m_duration));
     });
+    // Lit cyan while playing, idle green while paused, glyph and halo together.
     connect(m_video, &VideoWidget::pausedChanged, this, [this](bool paused) {
-        m_playButton->setIcon(ledIcon(style(), paused ? QStyle::SP_MediaPlay
-                                                      : QStyle::SP_MediaPause));
+        m_playButton->setIcon(ledIcon(style(), paused ? QStyle::SP_MediaPlay : QStyle::SP_MediaPause,
+                                      22, paused ? kLed : kLedActive));
+        setGlowActive(m_playButton, !paused);
     });
 }
 
 void MainWindow::scaleTo(int factor)
 {
     m_scaleFactor = factor;
+    for (QToolButton *b : m_scaleButtons)
+        b->setChecked(b->property("factor").toInt() == factor);
     // Scale against the shader source, not the raw video: an integer multiple of the source is
     // what keeps crt-royale's scanlines and mask clean, and it honours the Source Resolution
     // override so 2x of a pinned 320x240 is a true 640x480.
@@ -604,6 +650,15 @@ void MainWindow::applySourceLines(int lines, bool persist)
     }
 }
 
+void MainWindow::applyRefreshRate(int hz, bool persist)
+{
+    m_video->setRefreshRate(hz);
+    for (QToolButton *b : m_refreshButtons)
+        b->setChecked(b->property("hz").toInt() == hz);
+    if (persist)
+        settings()->setValue(QStringLiteral("video/refreshRate"), hz);
+}
+
 // Spell out what the chosen line count actually works out to for the video that is loaded, since
 // that is the part a fixed "480p" label cannot tell you: the width is whatever the aspect gives.
 void MainWindow::updateSourceLabel()
@@ -662,6 +717,7 @@ void MainWindow::restoreSettings()
     if (lines < 0)
         lines = s->value(QStringLiteral("shaders/sourceOverride")).toSize().height();
     applySourceLines(std::max(0, lines), false);
+    applyRefreshRate(s->value(QStringLiteral("video/refreshRate"), 60).toInt(), false);
 
     QString preset = s->value(QStringLiteral("shaders/lastPreset")).toString();
     // First run defaults to crt-royale, matching the favourite seeded in ShaderPanel. Guarded

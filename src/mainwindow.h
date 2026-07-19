@@ -27,6 +27,8 @@ public:
     void openFiles(const QStringList &files, bool append = false);
     void restorePlaylist();
     VideoWidget *video() const { return m_video; }
+    HooksPanel *hooks() const { return m_hooks; }         // --hooktest drives the real panel
+    HookWorker *hookWorker() const { return m_hookWorker; }
 
 protected:
     void closeEvent(QCloseEvent *e) override;
@@ -44,6 +46,7 @@ private:
     void buildResolutionBar();
     void rebuildSubtitleMenu();
     void applySourceLines(int lines, bool persist = true);
+    void applyRefreshRate(int hz, bool persist = true);
     void updateSourceLabel();
     void promptOpen(bool append);
     void restoreSettings();
@@ -57,6 +60,8 @@ private:
 
     QMenu *m_subtitleMenu = nullptr;
     QList<QToolButton *> m_sourceButtons;   // one per line count; the checked one is active
+    QList<QToolButton *> m_refreshButtons;  // one per refresh rate; the checked one is active
+    QList<QToolButton *> m_scaleButtons;    // 1x / 2x / 3x; the checked one is the current scale
     QLabel *m_sourceLabel = nullptr;        // what the current pick resolves to for this video
     QAction *m_fullscreenAction = nullptr;
     QDockWidget *m_libraryDock = nullptr;
