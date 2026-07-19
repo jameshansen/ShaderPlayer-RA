@@ -27,3 +27,7 @@ Ever since seeing the CRT-Royale shader in Retro Arch, I've always wanted to use
 The problem - much of this is C++ based and low-level difficult code, working with shaders, OpenGL and so on, so I never was able to commit the time to make it happen. However, in the era of AI-assisted development, I was finally able to create this "dream" app of mine, and even get it doing some amazing things like hook into running games, a typically very difficult task.
 
 So here it is, still in progress!
+
+**Similar Projects**
+
+ShaderGlass by mausimus offers similar capabilities, applying to any windows desktop app: https://mausimus.itch.io/shaderglass - great project!
