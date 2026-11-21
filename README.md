@@ -35,3 +35,7 @@ ShaderGlass by mausimus offers similar capabilities, applying to any windows des
 ## AI use disclosure
 
 ShaderPlayer-RA was built using [Claude Code](https://claude.com/claude-code) with Claude Opus 4.8.
+
+## License
+
+ShaderPlayer-RA is free software under the GNU General Public License v3.0, in [LICENSE](LICENSE).
