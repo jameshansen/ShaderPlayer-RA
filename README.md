@@ -31,3 +31,7 @@ So here it is, still in progress!
 **Similar Projects**
 
 ShaderGlass by mausimus offers similar capabilities, applying to any windows desktop app: https://mausimus.itch.io/shaderglass - great project!
+
+## AI use disclosure
+
+ShaderPlayer-RA was built using [Claude Code](https://claude.com/claude-code) with Claude Opus 4.8.
